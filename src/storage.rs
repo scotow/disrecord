@@ -116,7 +116,7 @@ impl Storage {
         let tx_ref = tx.clone();
         tokio::spawn(async move {
             loop {
-                sleep(Duration::from_secs(2)).await;
+                sleep(Duration::from_secs(30)).await;
                 tx_ref
                     .send(Action::Cleanup)
                     .expect("Cleanup message failure.");
