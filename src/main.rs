@@ -95,7 +95,7 @@ impl Handler {
         let (tx, rx) = oneshot::channel();
         self.0
             .send(Action::GetWhitelist(tx))
-            .expect("List request failure.");
+            .expect("List request failure");
 
         let list = rx.await.expect("List fetching failure");
         command
@@ -113,13 +113,13 @@ impl Handler {
                     })
             })
             .await
-            .expect("Voice data transmission failure.");
+            .expect("Voice data transmission failure");
     }
 
     async fn join(&self, ctx: Context, command: ApplicationCommandInteraction) {
         self.0
             .send(Action::AddToWhitelist(HashSet::from([command.user.id])))
-            .expect("Adding to whitelist failed.");
+            .expect("Adding to whitelist failed");
 
         command
             .create_interaction_response(&ctx, |response| {
@@ -130,13 +130,13 @@ impl Handler {
                     })
             })
             .await
-            .expect("Adding to whitelist failed.");
+            .expect("Adding to whitelist failed");
     }
 
     async fn leave(&self, ctx: Context, command: ApplicationCommandInteraction) {
         self.0
             .send(Action::RemoveToWhitelist(HashSet::from([command.user.id])))
-            .expect("Leaving to whitelist failed.");
+            .expect("Leaving whitelist failed");
 
         command
             .create_interaction_response(&ctx, |response| {
@@ -147,7 +147,7 @@ impl Handler {
                     })
             })
             .await
-            .expect("Leaving to whitelist failed.");
+            .expect("Leaving whitelist failed");
     }
 
     async fn listen(&self, ctx: Context, command: ApplicationCommandInteraction) {
@@ -166,7 +166,7 @@ impl Handler {
                             })
                     })
                     .await
-                    .expect("Cannot find voice channel failed.");
+                    .expect("Cannot find voice channel");
                 return;
             }
         };
@@ -186,7 +186,7 @@ impl Handler {
                     .interaction_response_data(|message| message.content("Listening..."))
             })
             .await
-            .expect("Cannot send listen message.");
+            .expect("Cannot send listen message");
     }
 
     async fn download(&self, ctx: Context, command: ApplicationCommandInteraction) {
@@ -204,9 +204,9 @@ impl Handler {
         let (tx, rx) = oneshot::channel::<Option<VecDeque<i16>>>();
         self.0
             .send(Action::GetData(requested_user.id, tx))
-            .expect("Download request failure.");
+            .expect("Download request failure");
 
-        let data = rx.await.expect("Voice data fetching error.");
+        let data = rx.await.expect("Voice data fetching error");
         match data.map(|data| Vec::from(data)) {
             Some(data) => {
                 command
@@ -221,7 +221,7 @@ impl Handler {
                             })
                     })
                     .await
-                    .expect("Voice data transmission failure.");
+                    .expect("Voice data transmission failure");
             }
             None => {
                 command
@@ -234,7 +234,7 @@ impl Handler {
                             })
                     })
                     .await
-                    .expect("Download response failure.");
+                    .expect("Download response failure");
             }
         }
     }
@@ -253,7 +253,7 @@ impl Handler {
                     })
             })
             .await
-            .expect("Help response failure.");
+            .expect("Help response failure");
     }
 }
 
