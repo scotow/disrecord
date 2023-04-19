@@ -1,10 +1,13 @@
+use std::{
+    collections::{HashMap, HashSet, VecDeque},
+    time::{Duration, Instant},
+};
+
 use serenity::model::id::UserId;
-use std::collections::{HashMap, HashSet, VecDeque};
-use std::time::{Duration, Instant};
-use tokio::sync::mpsc;
-use tokio::sync::mpsc::UnboundedSender;
-use tokio::sync::oneshot::Sender as OneshotSender;
-use tokio::time::sleep;
+use tokio::{
+    sync::{mpsc, mpsc::UnboundedSender, oneshot::Sender as OneshotSender},
+    time::sleep,
+};
 
 pub type Ssrc = u32;
 

@@ -1,26 +1,38 @@
-use crate::storage::{Action, Storage};
+use std::{
+    collections::{HashSet, VecDeque},
+    env,
+    time::Duration,
+};
+
 use bytemuck::cast_slice;
 use itertools::Itertools;
-use serenity::async_trait;
-use serenity::client::{Context, EventHandler};
-use serenity::model::application::command::{Command, CommandOptionType, CommandType};
-use serenity::model::application::interaction::application_command::ApplicationCommandInteraction;
-use serenity::model::application::interaction::{Interaction, InteractionResponseType};
-use serenity::model::channel::ChannelType;
-use serenity::model::gateway::Ready;
-use serenity::model::id::{ChannelId, GuildId, UserId};
-use serenity::model::mention::Mention;
-use serenity::model::prelude::interaction::application_command::CommandDataOptionValue;
-use serenity::prelude::GatewayIntents;
-use serenity::Client;
-use songbird::driver::DecodeMode;
-use songbird::EventHandler as VoiceEventHandler;
-use songbird::{CoreEvent, Event, EventContext, SerenityInit};
-use std::collections::{HashSet, VecDeque};
-use std::env;
-use std::time::Duration;
-use tokio::sync::mpsc::UnboundedSender;
-use tokio::sync::oneshot;
+use serenity::{
+    async_trait,
+    client::{Context, EventHandler},
+    model::{
+        application::{
+            command::{Command, CommandOptionType, CommandType},
+            interaction::{
+                application_command::ApplicationCommandInteraction, Interaction,
+                InteractionResponseType,
+            },
+        },
+        channel::ChannelType,
+        gateway::Ready,
+        id::{ChannelId, GuildId, UserId},
+        mention::Mention,
+        prelude::interaction::application_command::CommandDataOptionValue,
+    },
+    prelude::GatewayIntents,
+    Client,
+};
+use songbird::{
+    driver::DecodeMode, CoreEvent, Event, EventContext, EventHandler as VoiceEventHandler,
+    SerenityInit,
+};
+use tokio::sync::{mpsc::UnboundedSender, oneshot};
+
+use crate::storage::{Action, Storage};
 
 mod storage;
 
