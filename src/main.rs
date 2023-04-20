@@ -13,15 +13,14 @@ use serenity::{
         application::{
             command::{Command, CommandOptionType, CommandType},
             interaction::{
-                application_command::ApplicationCommandInteraction, Interaction,
-                InteractionResponseType,
+                application_command::{ApplicationCommandInteraction, CommandDataOptionValue},
+                Interaction, InteractionResponseType,
             },
         },
         channel::ChannelType,
         gateway::Ready,
         id::{ChannelId, GuildId, UserId},
         mention::Mention,
-        prelude::interaction::application_command::CommandDataOptionValue,
     },
     prelude::GatewayIntents,
     Client,

@@ -76,16 +76,12 @@ impl Storage {
                         if let Some(user_data) = self.mapping.get_mut(&ssrc) {
                             if self.white_list.contains(&user_data.id) {
                                 user_data.last_insert = Instant::now();
-                                // let now = Instant::now();
-                                // let user_data = self
-                                //     .mapping
-                                //     .entry(ssrc)
-                                //     .or_insert(UserVoiceData::new(None, self.buffer_size));
-                                // user_data.last_insert = now;
-                                if user_data.data.capacity() - user_data.data.len() < data.len() {
-                                    user_data
-                                        .data
-                                        .truncate(user_data.data.capacity() - data.len());
+                                if user_data.data.capacity() < user_data.data.len() + data.len() {
+                                    for _ in 0..data.len()
+                                        - (user_data.data.capacity() - user_data.data.len())
+                                    {
+                                        user_data.data.pop_front();
+                                    }
                                 }
                                 user_data.data.extend(data);
                             }
