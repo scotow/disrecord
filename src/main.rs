@@ -60,6 +60,7 @@ impl EventHandler for Handler {
             "listen" => self.listen(ctx, command).await,
             "leave" => self.leave(ctx, command).await,
             "help" => self.help(ctx, command).await,
+            "version" => self.version(ctx, command).await,
             _ => (),
         };
     }
@@ -279,6 +280,19 @@ impl Handler {
             .await
             .expect("Help response failure");
     }
+
+    async fn version(&self, ctx: Context, command: ApplicationCommandInteraction) {
+        command
+            .create_interaction_response(&ctx, |response| {
+                response
+                    .kind(InteractionResponseType::ChannelMessageWithSource)
+                    .interaction_response_data(|message| {
+                        message.content(env!("CARGO_PKG_VERSION"))
+                    })
+            })
+            .await
+            .expect("Version response failure");
+    }
 }
 
 async fn create_global_commands(ctx: &Context) {
@@ -335,6 +349,14 @@ async fn create_global_commands(ctx: &Context) {
             command
                 .kind(CommandType::ChatInput)
                 .name("help")
+                .description("Display help")
+        });
+
+        // Version.
+        builder.create_application_command(|command| {
+            command
+                .kind(CommandType::ChatInput)
+                .name("version")
                 .description("Display help")
         })
     })
