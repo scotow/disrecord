@@ -1,10 +1,10 @@
-FROM rust:1.68-slim AS builder
+FROM rust:1.69-slim AS builder
 
 WORKDIR /app
 
 COPY . .
 
-RUN apt-get update && apt-get install -y libopus0 autoconf libtool build-essential
+RUN apt-get update && apt-get install -y libopus0 autoconf libtool build-essential cmake
 RUN LIBOPUS_STATIC=1 cargo build --release
 
 #------------
