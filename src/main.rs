@@ -2,7 +2,6 @@ use std::{
     borrow::Cow,
     collections::{HashSet, VecDeque},
     io::Cursor,
-    mem,
 };
 
 use clap::Parser;
@@ -359,26 +358,12 @@ async fn find_voice_channel(ctx: &Context, guild: GuildId, user: UserId) -> Opti
 async fn main() {
     let options = Options::parse();
 
-    let whitelist = tokio::fs::read(&options.whitelist_path)
-        .await
-        .ok()
-        .map(|file| {
-            file.chunks(mem::size_of::<u64>())
-                .map(|l| {
-                    UserId(u64::from_be_bytes(
-                        l.try_into().expect("Invalid whitelist user id"),
-                    ))
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-
     let storage = Storage::new(
         options.voice_buffer_duration,
         options.voice_buffer_expiration,
-        whitelist,
         options.whitelist_path,
-    );
+    )
+    .await;
     let tx = storage.run_loop();
 
     let intents = GatewayIntents::all();

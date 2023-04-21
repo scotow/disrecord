@@ -1,5 +1,6 @@
 use std::{
     collections::{HashMap, HashSet, VecDeque},
+    mem,
     path::PathBuf,
     time::{Duration, Instant},
 };
@@ -25,13 +26,26 @@ pub struct Storage {
 }
 
 impl Storage {
-    pub fn new(
+    pub async fn new(
         buffer_size: Duration,
         clean_timeout: Duration,
-        whitelist: HashSet<UserId>,
         whitelist_path: PathBuf,
     ) -> Self {
         assert!(buffer_size > Duration::from_secs(1));
+
+        let whitelist = tokio::fs::read(&whitelist_path)
+            .await
+            .ok()
+            .map(|file| {
+                file.chunks(mem::size_of::<u64>())
+                    .map(|l| {
+                        UserId(u64::from_be_bytes(
+                            l.try_into().expect("Invalid whitelist user id"),
+                        ))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
 
         Self {
             buffer_size,
