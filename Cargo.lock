@@ -240,17 +240,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "discord-record"
-version = "0.1.0"
-dependencies = [
- "itertools",
- "serenity",
- "songbird",
- "tokio",
- "wav",
-]
-
-[[package]]
 name = "discortp"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -258,6 +247,17 @@ checksum = "fb66017646a48220b5ea30d63ac18bb5952f647f1a41ed755880895125d26972"
 dependencies = [
  "pnet_macros",
  "pnet_macros_support",
+]
+
+[[package]]
+name = "disrecord"
+version = "0.1.0"
+dependencies = [
+ "itertools",
+ "serenity",
+ "songbird",
+ "tokio",
+ "wav",
 ]
 
 [[package]]
