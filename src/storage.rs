@@ -31,7 +31,7 @@ impl Storage {
         clean_timeout: Duration,
         whitelist_path: PathBuf,
     ) -> Self {
-        assert!(buffer_size > Duration::from_secs(1));
+        assert!(buffer_size > Duration::from_secs(1) && buffer_size < Duration::from_secs(4 * 60));
 
         let whitelist = tokio::fs::read(&whitelist_path)
             .await
