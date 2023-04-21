@@ -1,13 +1,11 @@
 use std::{
     borrow::Cow,
     collections::{HashSet, VecDeque},
-    env,
     io::Cursor,
     mem,
-    path::PathBuf,
-    time::Duration,
 };
 
+use clap::Parser;
 use itertools::Itertools;
 use serenity::{
     async_trait,
@@ -34,8 +32,12 @@ use songbird::{
 };
 use tokio::sync::{mpsc::UnboundedSender, oneshot};
 
-use crate::storage::{Action, Storage};
+use crate::{
+    options::Options,
+    storage::{Action, Storage},
+};
 
+mod options;
 mod storage;
 
 #[derive(Clone)]
@@ -355,8 +357,9 @@ async fn find_voice_channel(ctx: &Context, guild: GuildId, user: UserId) -> Opti
 
 #[tokio::main]
 async fn main() {
-    let whitelist_path = PathBuf::from(env::var("WHITELIST").expect("Missing whitelist"));
-    let whitelist = tokio::fs::read(&whitelist_path)
+    let options = Options::parse();
+
+    let whitelist = tokio::fs::read(&options.whitelist_path)
         .await
         .ok()
         .map(|file| {
@@ -371,16 +374,15 @@ async fn main() {
         .unwrap_or_default();
 
     let storage = Storage::new(
-        Duration::from_secs(3 * 60),
-        Duration::from_secs(5 * 60),
+        options.voice_buffer_duration,
+        options.voice_buffer_expiration,
         whitelist,
-        whitelist_path,
+        options.whitelist_path,
     );
     let tx = storage.run_loop();
 
-    let token = env::var("DISCORD_TOKEN").expect("Missing token");
     let intents = GatewayIntents::all();
-    let mut client = Client::builder(token, intents)
+    let mut client = Client::builder(options.discord_token, intents)
         .event_handler(Handler(tx))
         .register_songbird_from_config(songbird::Config::default().decode_mode(DecodeMode::Decode))
         .await
