@@ -1,10 +1,7 @@
 use std::{
-    collections::{HashSet, VecDeque},
-    env,
-    time::Duration,
+    borrow::Cow, collections::VecDeque, env, io::Cursor, mem, path::PathBuf, time::Duration,
 };
 
-use bytemuck::cast_slice;
 use itertools::Itertools;
 use serenity::{
     async_trait,
@@ -17,7 +14,7 @@ use serenity::{
                 Interaction, InteractionResponseType,
             },
         },
-        channel::ChannelType,
+        channel::{AttachmentType, ChannelType},
         gateway::Ready,
         id::{ChannelId, GuildId, UserId},
         mention::Mention,
@@ -117,7 +114,7 @@ impl Handler {
 
     async fn join(&self, ctx: Context, command: ApplicationCommandInteraction) {
         self.0
-            .send(Action::AddToWhitelist(HashSet::from([command.user.id])))
+            .send(Action::AddToWhitelist(command.user.id))
             .expect("Adding to whitelist failed");
 
         command
@@ -134,7 +131,7 @@ impl Handler {
 
     async fn leave(&self, ctx: Context, command: ApplicationCommandInteraction) {
         self.0
-            .send(Action::RemoveToWhitelist(HashSet::from([command.user.id])))
+            .send(Action::RemoveFromWhitelist(command.user.id))
             .expect("Leaving whitelist failed");
 
         command
@@ -208,15 +205,22 @@ impl Handler {
         let data = rx.await.expect("Voice data fetching error");
         match data.map(|data| Vec::from(data)) {
             Some(data) => {
+                let mut wav_file = Cursor::new(Vec::with_capacity(44 + data.len() * 2));
+                wav::write(
+                    wav::Header::new(wav::WAV_FORMAT_PCM, 1, storage::FREQUENCY as u32, 16),
+                    &wav::BitDepth::Sixteen(data),
+                    &mut wav_file,
+                )
+                .expect("Cannot create wav file");
                 command
                     .create_interaction_response(&ctx, |response| {
                         response
                             .kind(InteractionResponseType::ChannelMessageWithSource)
                             .interaction_response_data(|message| {
-                                message.add_file((
-                                    cast_slice::<_, u8>(&data),
-                                    format!("{}.pcm", requested_user.name).as_str(),
-                                ))
+                                message.add_file(AttachmentType::Bytes {
+                                    data: Cow::from(wav_file.into_inner()),
+                                    filename: format!("{}.wav", requested_user.name),
+                                })
                             })
                     })
                     .await
@@ -244,11 +248,13 @@ impl Handler {
                 response
                     .kind(InteractionResponseType::ChannelMessageWithSource)
                     .interaction_response_data(|message| {
-                        message
-                            .content([
-                                "Use Audacity to load and cut parts of the recordings:",
-                                "File > Import > Raw data > Signed 16-bit PCM, 1 Channel Mono, 48k Hz",
-                            ].join("\n"))
+                        message.content(
+                            [
+                                "Use Audacity to load and cut parts of the recordings.",
+                                // "File > Import > Raw data > Signed 16-bit PCM, 1 Channel Mono, 48k Hz",
+                            ]
+                            .join("\n"),
+                        )
                     })
             })
             .await
@@ -331,7 +337,27 @@ async fn find_voice_channel(ctx: &Context, guild: GuildId, user: UserId) -> Opti
 
 #[tokio::main]
 async fn main() {
-    let storage = Storage::new(Duration::from_secs(3 * 60), Duration::from_secs(5 * 60));
+    let whitelist_path = PathBuf::from(env::var("WHITELIST").expect("Missing whitelist"));
+    let whitelist = tokio::fs::read(&whitelist_path)
+        .await
+        .ok()
+        .map(|file| {
+            file.chunks(mem::size_of::<u64>())
+                .map(|l| {
+                    UserId(u64::from_be_bytes(
+                        l.try_into().expect("Invalid whitelist user id"),
+                    ))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let storage = Storage::new(
+        Duration::from_secs(3 * 60),
+        Duration::from_secs(5 * 60),
+        whitelist,
+        whitelist_path,
+    );
     let tx = storage.run_loop();
 
     let token = env::var("DISCORD_TOKEN").expect("Missing token");

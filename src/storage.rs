@@ -1,34 +1,44 @@
 use std::{
     collections::{HashMap, HashSet, VecDeque},
+    path::PathBuf,
     time::{Duration, Instant},
 };
 
 use serenity::model::id::UserId;
 use tokio::{
+    fs::{File, OpenOptions},
+    io::AsyncWriteExt,
     sync::{mpsc, mpsc::UnboundedSender, oneshot::Sender as OneshotSender},
     time::sleep,
 };
 
 pub type Ssrc = u32;
 
-const FREQUENCY: usize = 48_000;
+pub const FREQUENCY: usize = 48_000;
 
 pub struct Storage {
     buffer_size: Duration,
     clean_timeout: Duration,
     mapping: HashMap<Ssrc, UserVoiceData>,
-    white_list: HashSet<UserId>,
+    whitelist: HashSet<UserId>,
+    whitelist_path: PathBuf,
 }
 
 impl Storage {
-    pub fn new(buffer_size: Duration, clean_timeout: Duration) -> Self {
+    pub fn new(
+        buffer_size: Duration,
+        clean_timeout: Duration,
+        whitelist: HashSet<UserId>,
+        whitelist_path: PathBuf,
+    ) -> Self {
         assert!(buffer_size > Duration::from_secs(1));
 
         Self {
             buffer_size,
             clean_timeout,
             mapping: HashMap::new(),
-            white_list: HashSet::new(),
+            whitelist,
+            whitelist_path,
         }
     }
 
@@ -38,24 +48,47 @@ impl Storage {
             loop {
                 let event = rx.recv().await.expect("Event channel closed.");
                 match event {
-                    Action::AddToWhitelist(users) => {
-                        self.white_list.extend(users);
+                    Action::AddToWhitelist(user) => {
+                        if self.whitelist.insert(user) {
+                            let mut file = OpenOptions::new()
+                                .append(true)
+                                .create(true)
+                                .open(&self.whitelist_path)
+                                .await
+                                .expect("Cannot create whitelist file");
+                            file.write_u64(*user.as_u64())
+                                .await
+                                .expect("Cannot append user id to whitelist");
+                        }
                     }
-                    Action::RemoveToWhitelist(users) => {
-                        for to_remove in users {
-                            // Remove to white list.
-                            self.white_list.remove(&to_remove);
+                    Action::RemoveFromWhitelist(user) => {
+                        // Remove to white list.
+                        if self.whitelist.remove(&user) {
+                            File::create(&self.whitelist_path)
+                                .await
+                                .expect("Cannot open whitelist file")
+                                .write_all(
+                                    &self
+                                        .whitelist
+                                        .iter()
+                                        .flat_map(|user| user.as_u64().to_be_bytes())
+                                        .collect::<Vec<_>>(),
+                                )
+                                .await
+                                .expect("Cannot write whitelist file");
+                        }
 
-                            // Remove data, but keep mapping.
-                            if let Some(user_data) =
-                                self.mapping.values_mut().find(|user| user.id == to_remove)
-                            {
-                                user_data.data.clear();
-                            }
+                        // Remove data, but keep mapping.
+                        if let Some(user_data) = self
+                            .mapping
+                            .values_mut()
+                            .find(|user_data| user_data.id == user)
+                        {
+                            user_data.data.clear();
                         }
                     }
                     Action::GetWhitelist(tx) => {
-                        tx.send(self.white_list.clone())
+                        tx.send(self.whitelist.clone())
                             .expect("Cannot send whitelist.");
                     }
                     Action::MapUser(id, ssrc) => {
@@ -74,7 +107,7 @@ impl Storage {
                     }
                     Action::RegisterVoiceData(ssrc, data) => {
                         if let Some(user_data) = self.mapping.get_mut(&ssrc) {
-                            if self.white_list.contains(&user_data.id) {
+                            if self.whitelist.contains(&user_data.id) {
                                 user_data.last_insert = Instant::now();
                                 if user_data.data.capacity() < user_data.data.len() + data.len() {
                                     for _ in 0..data.len()
@@ -141,8 +174,8 @@ impl UserVoiceData {
 
 #[derive(Debug)]
 pub enum Action {
-    AddToWhitelist(HashSet<UserId>),
-    RemoveToWhitelist(HashSet<UserId>),
+    AddToWhitelist(UserId),
+    RemoveFromWhitelist(UserId),
     GetWhitelist(OneshotSender<HashSet<UserId>>),
     MapUser(UserId, Ssrc),
     RegisterVoiceData(Ssrc, Vec<i16>),
