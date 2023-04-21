@@ -128,8 +128,8 @@ impl Handler {
                             "*Nobody.*".to_owned()
                         } else {
                             list.into_iter()
-                                .map(|user| format!("- {}", Mention::from(user)))
-                                .join("\n")
+                                .map(|user| Mention::from(user))
+                                .join(", ")
                         })
                     })
             })
