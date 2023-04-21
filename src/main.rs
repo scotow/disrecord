@@ -1,5 +1,11 @@
 use std::{
-    borrow::Cow, collections::VecDeque, env, io::Cursor, mem, path::PathBuf, time::Duration,
+    borrow::Cow,
+    collections::{HashSet, VecDeque},
+    env,
+    io::Cursor,
+    mem,
+    path::PathBuf,
+    time::Duration,
 };
 
 use itertools::Itertools;
@@ -88,12 +94,30 @@ impl VoiceEventHandler for Handler {
 
 impl Handler {
     async fn list(&self, ctx: Context, command: ApplicationCommandInteraction) {
+        let Some(guild) = command.guild_id else {
+            return
+        };
+
         let (tx, rx) = oneshot::channel();
         self.0
             .send(Action::GetWhitelist(tx))
             .expect("List request failure");
 
-        let list = rx.await.expect("List fetching failure");
+        let list = rx
+            .await
+            .expect("List fetching failure")
+            .intersection(
+                &ctx.cache
+                    .guild(guild)
+                    .expect("Cannot find guild")
+                    .members
+                    .keys()
+                    .copied()
+                    .collect(),
+            )
+            .copied()
+            .collect::<HashSet<_>>();
+
         command
             .create_interaction_response(&ctx, |response| {
                 response
@@ -248,13 +272,7 @@ impl Handler {
                 response
                     .kind(InteractionResponseType::ChannelMessageWithSource)
                     .interaction_response_data(|message| {
-                        message.content(
-                            [
-                                "Use Audacity to load and cut parts of the recordings.",
-                                // "File > Import > Raw data > Signed 16-bit PCM, 1 Channel Mono, 48k Hz",
-                            ]
-                            .join("\n"),
-                        )
+                        message.content("Use Audacity to load and cut parts of the recordings.")
                     })
             })
             .await
