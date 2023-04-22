@@ -1,7 +1,6 @@
 use std::{
     borrow::Cow,
     collections::{HashSet, VecDeque},
-    io::Cursor,
 };
 
 use clap::Parser;
@@ -38,6 +37,11 @@ use crate::{
 
 mod options;
 mod storage;
+mod wav;
+
+/// Max body size is 25MiB including other fields. We cut at 24MiB because calculating the rest of
+/// the body is too unreliable.
+const MAX_FILE_SIZE: usize = 24 * (1 << 20);
 
 #[derive(Clone)]
 struct Handler(UnboundedSender<Action>);
@@ -133,7 +137,7 @@ impl Handler {
                     })
             })
             .await
-            .expect("Voice data transmission failure");
+            .expect("Cannot send whitelist");
     }
 
     async fn join(&self, ctx: Context, command: ApplicationCommandInteraction) {
@@ -229,26 +233,27 @@ impl Handler {
         let data = rx.await.expect("Voice data fetching error");
         match data.map(|data| Vec::from(data)) {
             Some(data) => {
-                let mut wav_file = Cursor::new(Vec::with_capacity(44 + data.len() * 2));
-                wav::write(
-                    wav::Header::new(wav::WAV_FORMAT_PCM, 1, storage::FREQUENCY as u32, 16),
-                    &wav::BitDepth::Sixteen(data),
-                    &mut wav_file,
-                )
-                .expect("Cannot create wav file");
-                command
-                    .create_interaction_response(&ctx, |response| {
-                        response
-                            .kind(InteractionResponseType::ChannelMessageWithSource)
-                            .interaction_response_data(|message| {
-                                message.add_file(AttachmentType::Bytes {
-                                    data: Cow::from(wav_file.into_inner()),
-                                    filename: format!("{}.wav", requested_user.name),
-                                })
+                command.defer(&ctx).await.expect("Download defer failed");
+                for (i, chunk) in data
+                    .chunks((MAX_FILE_SIZE - wav::HEADER_SIZE) / 2)
+                    .enumerate()
+                {
+                    let filename = if data.len() <= (MAX_FILE_SIZE - wav::HEADER_SIZE) / 2 {
+                        format!("{}.wav", requested_user.name)
+                    } else {
+                        format!("{}-{}.wav", requested_user.name, i + 1)
+                    };
+
+                    command
+                        .create_followup_message(&ctx, |response| {
+                            response.add_file(AttachmentType::Bytes {
+                                data: Cow::from(wav::package(chunk)),
+                                filename,
                             })
-                    })
-                    .await
-                    .expect("Voice data transmission failure");
+                        })
+                        .await
+                        .expect("Voice data transmission failure");
+                }
             }
             None => {
                 command
