@@ -1,6 +1,10 @@
 use std::{
     borrow::Cow,
     collections::{HashSet, VecDeque},
+    sync::{
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        Arc,
+    },
 };
 
 use clap::Parser;
@@ -20,6 +24,7 @@ use serenity::{
         gateway::Ready,
         id::{ChannelId, GuildId, UserId},
         mention::Mention,
+        prelude::VoiceState,
     },
     prelude::GatewayIntents,
     Client,
@@ -44,12 +49,27 @@ mod wav;
 const MAX_FILE_SIZE: usize = 24 * (1 << 20);
 
 #[derive(Clone)]
-struct Handler(UnboundedSender<Action>);
+struct Handler {
+    bot_id: Arc<AtomicU64>,
+    handlers_bound: Arc<AtomicBool>,
+    actions_tx: UnboundedSender<Action>,
+}
 
 #[async_trait]
 impl EventHandler for Handler {
-    async fn ready(&self, ctx: Context, _data_about_bot: Ready) {
+    async fn ready(&self, ctx: Context, data_about_bot: Ready) {
+        self.bot_id
+            .store(*data_about_bot.user.id.as_u64(), Ordering::Relaxed);
         create_global_commands(&ctx).await;
+    }
+
+    async fn voice_state_update(&self, ctx: Context, old: Option<VoiceState>, new: VoiceState) {
+        if let Some(channel) = old.and_then(|c| c.channel_id) {
+            self.disconnect_if_alone(&ctx, channel).await;
+        }
+        if let Some(channel) = new.channel_id {
+            self.disconnect_if_alone(&ctx, channel).await;
+        }
     }
 
     async fn interaction_create(&self, ctx: Context, interaction: Interaction) {
@@ -76,19 +96,19 @@ impl VoiceEventHandler for Handler {
         match ctx {
             EventContext::SpeakingStateUpdate(event) => {
                 if let Some(user) = event.user_id {
-                    self.0
+                    self.actions_tx
                         .send(Action::MapUser(UserId(user.0), event.ssrc))
                         .expect("Event dispatch error");
                 }
             }
             EventContext::VoicePacket(packet) => {
                 if let Some(audio) = packet.audio {
-                    self.0
+                    self.actions_tx
                         .send(Action::RegisterVoiceData(
                             packet.packet.ssrc,
                             audio
                                 .chunks_exact(2)
-                                .map(|cs| cs[0] / 2 + cs[1] / 2)
+                                .map(|cs| ((cs[0] as i32 + cs[1] as i32) / 2) as i16)
                                 .collect(),
                         ))
                         .expect("Event dispatch error");
@@ -108,7 +128,7 @@ impl Handler {
         };
 
         let (tx, rx) = oneshot::channel();
-        self.0
+        self.actions_tx
             .send(Action::GetWhitelist(tx))
             .expect("List request failure");
 
@@ -144,7 +164,7 @@ impl Handler {
     }
 
     async fn join(&self, ctx: Context, command: ApplicationCommandInteraction) {
-        self.0
+        self.actions_tx
             .send(Action::AddToWhitelist(command.user.id))
             .expect("Adding to whitelist failed");
 
@@ -161,7 +181,7 @@ impl Handler {
     }
 
     async fn leave(&self, ctx: Context, command: ApplicationCommandInteraction) {
-        self.0
+        self.actions_tx
             .send(Action::RemoveFromWhitelist(command.user.id))
             .expect("Leaving whitelist failed");
 
@@ -202,9 +222,11 @@ impl Handler {
         let (handler_lock, conn_result) = manager.join(guild, channel).await;
         conn_result.expect("Voice connexion failure");
 
-        let mut handler = handler_lock.lock().await;
-        handler.add_global_event(CoreEvent::SpeakingStateUpdate.into(), self.clone());
-        handler.add_global_event(CoreEvent::VoicePacket.into(), self.clone());
+        if !self.handlers_bound.swap(true, Ordering::Relaxed) {
+            let mut handler = handler_lock.lock().await;
+            handler.add_global_event(CoreEvent::SpeakingStateUpdate.into(), self.clone());
+            handler.add_global_event(CoreEvent::VoicePacket.into(), self.clone());
+        }
 
         command
             .create_interaction_response(&ctx, |response| {
@@ -229,7 +251,7 @@ impl Handler {
         };
 
         let (tx, rx) = oneshot::channel::<Option<VecDeque<i16>>>();
-        self.0
+        self.actions_tx
             .send(Action::GetData(requested_user.id, tx))
             .expect("Download request failure");
 
@@ -296,6 +318,29 @@ impl Handler {
             })
             .await
             .expect("Version response failure");
+    }
+
+    async fn disconnect_if_alone(&self, ctx: &Context, channel: ChannelId) {
+        let Some(channel) = ctx.cache.guild_channel(channel) else {
+            return;
+        };
+        if channel.kind != ChannelType::Voice {
+            return;
+        }
+
+        let members = channel
+            .members(&ctx)
+            .await
+            .expect("Cannot fetch member list");
+        if !(members.len() == 1 && members[0].user.id == self.bot_id.load(Ordering::Relaxed)) {
+            return;
+        }
+
+        let manager = songbird::get(&ctx).await.expect("Cannot get voice manager");
+        manager
+            .leave(channel.guild_id)
+            .await
+            .expect("Voice disconnection failure");
     }
 }
 
@@ -394,7 +439,11 @@ async fn main() {
 
     let intents = GatewayIntents::all();
     let mut client = Client::builder(options.discord_token, intents)
-        .event_handler(Handler(tx))
+        .event_handler(Handler {
+            bot_id: Arc::new(AtomicU64::new(0)),
+            handlers_bound: Arc::new(AtomicBool::new(false)),
+            actions_tx: tx,
+        })
         .register_songbird_from_config(songbird::Config::default().decode_mode(DecodeMode::Decode))
         .await
         .expect("Error creating client");
