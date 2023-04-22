@@ -128,9 +128,7 @@ impl Handler {
                         message.content(if list.is_empty() {
                             "*Nobody.*".to_owned()
                         } else {
-                            list.into_iter()
-                                .map(|user| Mention::from(user))
-                                .join(", ")
+                            list.into_iter().map(|user| Mention::from(user)).join(", ")
                         })
                     })
             })
@@ -286,9 +284,7 @@ impl Handler {
             .create_interaction_response(&ctx, |response| {
                 response
                     .kind(InteractionResponseType::ChannelMessageWithSource)
-                    .interaction_response_data(|message| {
-                        message.content(env!("CARGO_PKG_VERSION"))
-                    })
+                    .interaction_response_data(|message| message.content(env!("CARGO_PKG_VERSION")))
             })
             .await
             .expect("Version response failure");

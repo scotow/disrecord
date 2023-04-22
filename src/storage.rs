@@ -98,7 +98,7 @@ impl Storage {
                             .values_mut()
                             .find(|user_data| user_data.id == user)
                         {
-                            user_data.data.clear();
+                            user_data.data = None;
                         }
                     }
                     Action::GetWhitelist(tx) => {
@@ -115,47 +115,39 @@ impl Storage {
                             previous.last_insert = Instant::now();
                             previous
                         } else {
-                            UserVoiceData::new(id, self.buffer_size)
+                            UserVoiceData::new(id)
                         };
                         self.mapping.insert(ssrc, user_data);
                     }
                     Action::RegisterVoiceData(ssrc, data) => {
                         if let Some(user_data) = self.mapping.get_mut(&ssrc) {
                             if self.whitelist.contains(&user_data.id) {
-                                user_data.last_insert = Instant::now();
-                                if user_data.data.capacity() < user_data.data.len() + data.len() {
-                                    for _ in 0..data.len()
-                                        - (user_data.data.capacity() - user_data.data.len())
-                                    {
-                                        user_data.data.pop_front();
-                                    }
-                                }
-                                user_data.data.extend(data);
+                                user_data.push_data(data, self.buffer_size);
                             }
                         };
                     }
                     Action::GetData(user, tx) => {
-                        let data = match self
-                            .mapping
-                            .values()
-                            .find_map(|user_data| (user_data.id == user).then_some(user_data))
-                        {
-                            Some(user_data) if !user_data.data.is_empty() => {
-                                Some(user_data.data.clone())
-                            }
-                            Some(_) | None => None,
-                        };
+                        let data =
+                            match self.mapping.values().find_map(|user_data| {
+                                (user_data.id == user).then_some(&user_data.data)
+                            }) {
+                                Some(Some(data)) if !data.is_empty() => Some(data.clone()),
+                                _ => None,
+                            };
                         tx.send(data).expect("Voice data send failed.");
                     }
                     Action::Cleanup => {
-                        self.mapping.retain(|_, user_data| {
-                            user_data.last_insert.elapsed() <= self.clean_timeout
-                        });
+                        for user_data in self.mapping.values_mut() {
+                            if user_data.last_insert.elapsed() > self.clean_timeout {
+                                user_data.data = None;
+                            }
+                        }
                     }
                 }
             }
         });
 
+        // Cleaner loop.
         let tx_ref = tx.clone();
         tokio::spawn(async move {
             loop {
@@ -172,17 +164,32 @@ impl Storage {
 
 struct UserVoiceData {
     id: UserId,
-    data: VecDeque<i16>,
+    data: Option<VecDeque<i16>>,
     last_insert: Instant,
 }
 
 impl UserVoiceData {
-    fn new(id: UserId, buffer_size: Duration) -> Self {
+    fn new(id: UserId) -> Self {
         Self {
             id,
-            data: VecDeque::with_capacity(buffer_size.as_secs() as usize * FREQUENCY),
+            data: None,
             last_insert: Instant::now(),
         }
+    }
+
+    fn push_data(&mut self, new_data: Vec<i16>, buffer_size: Duration) {
+        self.last_insert = Instant::now();
+        let data = self.data.get_or_insert_with(|| {
+            VecDeque::with_capacity(buffer_size.as_secs() as usize * FREQUENCY)
+        });
+
+        // Make space without increasing capacity (if needed).
+        if data.capacity() < data.len() + new_data.len() {
+            for _ in 0..new_data.len() - (data.capacity() - data.len()) {
+                data.pop_front();
+            }
+        }
+        data.extend(new_data);
     }
 }
 
