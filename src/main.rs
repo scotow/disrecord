@@ -86,7 +86,10 @@ impl VoiceEventHandler for Handler {
                     self.0
                         .send(Action::RegisterVoiceData(
                             packet.packet.ssrc,
-                            audio.iter().step_by(2).copied().collect(),
+                            audio
+                                .chunks_exact(2)
+                                .map(|cs| cs[0] / 2 + cs[1] / 2)
+                                .collect(),
                         ))
                         .expect("Event dispatch error");
                 }
