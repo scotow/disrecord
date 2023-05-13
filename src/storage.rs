@@ -195,7 +195,7 @@ impl Storage {
                         tx.send(data).expect("Voice data send failed.");
                     }
                     Action::Cleanup => {
-                        info!("cleaning users voice data that hasn't speak for a while");
+                        debug!("cleaning users voice data that hasn't speak for a while");
                         let mut cleaned = 0;
                         for user_data in self.mapping.values_mut() {
                             if user_data.last_insert.elapsed() > self.clean_timeout {
@@ -203,7 +203,7 @@ impl Storage {
                                 cleaned += 1;
                             }
                         }
-                        info!("cleaned {cleaned} users voice data");
+                        debug!("cleaned {cleaned} users voice data");
                     }
                 }
             }
