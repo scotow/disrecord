@@ -1,6 +1,7 @@
 use std::{
     borrow::Cow,
     collections::{HashSet, VecDeque},
+    process::ExitCode,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         Arc,
@@ -8,7 +9,9 @@ use std::{
 };
 
 use clap::Parser;
+use env_logger::Builder;
 use itertools::Itertools;
+use log::{error, info};
 use serenity::{
     async_trait,
     client::{Context, EventHandler},
@@ -426,8 +429,13 @@ async fn find_voice_channel(ctx: &Context, guild: GuildId, user: UserId) -> Opti
 }
 
 #[tokio::main]
-async fn main() {
+async fn main() -> ExitCode {
     let options = Options::parse();
+    Builder::new()
+        .filter_level(options.log_level())
+        .parse_default_env()
+        .init();
+    log_panics::init();
 
     let storage = Storage::new(
         options.voice_buffer_duration,
@@ -448,7 +456,7 @@ async fn main() {
         .await
         .expect("Error creating client");
 
-    if let Err(why) = client.start().await {
-        println!("An error occurred while running the client: {:?}", why);
-    }
+    info!("disrecord bot started");
+    error!("bot starting error: {}", client.start().await.unwrap_err());
+    ExitCode::FAILURE
 }
