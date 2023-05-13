@@ -221,14 +221,14 @@ impl Handler {
             }
         };
 
-        let manager = songbird::get(&ctx).await.unwrap();
+        let manager = songbird::get(&ctx).await.expect("Failed to get songbird manager");
         let (handler_lock, conn_result) = manager.join(guild, channel).await;
         conn_result.expect("Voice connexion failure");
 
         if !self.handlers_bound.swap(true, Ordering::Relaxed) {
             let mut handler = handler_lock.lock().await;
-            handler.add_global_event(CoreEvent::SpeakingStateUpdate.into(), self.clone());
-            handler.add_global_event(CoreEvent::VoicePacket.into(), self.clone());
+            handler.add_global_event(Event::Core(CoreEvent::SpeakingStateUpdate), self.clone());
+            handler.add_global_event(Event::Core(CoreEvent::VoicePacket), self.clone());
         }
 
         command
@@ -417,9 +417,9 @@ async fn create_global_commands(ctx: &Context) {
 }
 
 async fn find_voice_channel(ctx: &Context, guild: GuildId, user: UserId) -> Option<ChannelId> {
-    for (id, channel) in guild.channels(&ctx.http).await.unwrap() {
+    for (id, channel) in guild.channels(&ctx.http).await.expect("Failed to fetch channels list") {
         if channel.kind == ChannelType::Voice {
-            let members = channel.members(ctx).await.unwrap();
+            let members = channel.members(ctx).await.expect("Failed to fetch channel members");
             if members.iter().any(|m| m.user.id == user) {
                 return Some(id);
             }
