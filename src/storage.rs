@@ -5,7 +5,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use log::{debug, info, log_enabled, Level};
+use log::{debug, info, log, log_enabled, Level};
 use serenity::model::id::UserId;
 use tokio::{
     fs::{File, OpenOptions},
@@ -203,7 +203,14 @@ impl Storage {
                                 cleaned += 1;
                             }
                         }
-                        debug!("cleaned {cleaned} users voice data");
+                        log!(
+                            if cleaned > 0 {
+                                Level::Info
+                            } else {
+                                Level::Debug
+                            },
+                            "cleaned {cleaned} users voice data"
+                        );
                     }
                 }
             }
