@@ -3,7 +3,7 @@ use std::{
     collections::{HashSet, VecDeque},
     process::ExitCode,
     sync::{
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicU64, Ordering},
         Arc,
     },
 };
@@ -54,7 +54,6 @@ const MAX_FILE_SIZE: usize = 24 * (1 << 20);
 #[derive(Clone)]
 struct Handler {
     bot_id: Arc<AtomicU64>,
-    handlers_bound: Arc<AtomicBool>,
     actions_tx: UnboundedSender<Action>,
 }
 
@@ -221,12 +220,15 @@ impl Handler {
             }
         };
 
-        let manager = songbird::get(&ctx).await.expect("Failed to get songbird manager");
+        let manager = songbird::get(&ctx)
+            .await
+            .expect("Failed to get songbird manager");
         let (handler_lock, conn_result) = manager.join(guild, channel).await;
         conn_result.expect("Voice connexion failure");
 
-        if !self.handlers_bound.swap(true, Ordering::Relaxed) {
+        {
             let mut handler = handler_lock.lock().await;
+            handler.remove_all_global_events();
             handler.add_global_event(Event::Core(CoreEvent::SpeakingStateUpdate), self.clone());
             handler.add_global_event(Event::Core(CoreEvent::VoicePacket), self.clone());
         }
@@ -417,9 +419,16 @@ async fn create_global_commands(ctx: &Context) {
 }
 
 async fn find_voice_channel(ctx: &Context, guild: GuildId, user: UserId) -> Option<ChannelId> {
-    for (id, channel) in guild.channels(&ctx.http).await.expect("Failed to fetch channels list") {
+    for (id, channel) in guild
+        .channels(&ctx.http)
+        .await
+        .expect("Failed to fetch channels list")
+    {
         if channel.kind == ChannelType::Voice {
-            let members = channel.members(ctx).await.expect("Failed to fetch channel members");
+            let members = channel
+                .members(ctx)
+                .await
+                .expect("Failed to fetch channel members");
             if members.iter().any(|m| m.user.id == user) {
                 return Some(id);
             }
@@ -449,7 +458,6 @@ async fn main() -> ExitCode {
     let mut client = Client::builder(options.discord_token, intents)
         .event_handler(Handler {
             bot_id: Arc::new(AtomicU64::new(0)),
-            handlers_bound: Arc::new(AtomicBool::new(false)),
             actions_tx: tx,
         })
         .register_songbird_from_config(songbird::Config::default().decode_mode(DecodeMode::Decode))
