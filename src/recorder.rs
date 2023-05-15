@@ -32,7 +32,7 @@ macro_rules! log_voice_data {
     };
 }
 
-pub struct Storage {
+pub struct Recorder {
     buffer_size: Duration,
     clean_timeout: Duration,
     mapping: HashMap<Ssrc, UserVoiceData>,
@@ -41,7 +41,7 @@ pub struct Storage {
     voice_data_received: usize,
 }
 
-impl Storage {
+impl Recorder {
     pub async fn new(
         buffer_size: Duration,
         clean_timeout: Duration,

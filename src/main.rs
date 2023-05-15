@@ -6,6 +6,7 @@ use std::{
         atomic::{AtomicU64, Ordering},
         Arc,
     },
+    time::Duration,
 };
 
 use clap::Parser;
@@ -18,12 +19,14 @@ use serenity::{
     model::{
         application::{
             command::{Command, CommandOptionType, CommandType},
+            component::ButtonStyle,
             interaction::{
                 application_command::{ApplicationCommandInteraction, CommandDataOptionValue},
+                message_component::MessageComponentInteraction,
                 Interaction, InteractionResponseType,
             },
         },
-        channel::{AttachmentType, ChannelType},
+        channel::{AttachmentType, ChannelType, ReactionType},
         gateway::Ready,
         id::{ChannelId, GuildId, UserId},
         mention::Mention,
@@ -33,18 +36,22 @@ use serenity::{
     Client,
 };
 use songbird::{
-    driver::DecodeMode, CoreEvent, Event, EventContext, EventHandler as VoiceEventHandler,
-    SerenityInit,
+    driver::DecodeMode,
+    input::{Codec, Container, Input, Reader},
+    CoreEvent, Event, EventContext, EventHandler as VoiceEventHandler, SerenityInit,
 };
 use tokio::sync::{mpsc::UnboundedSender, oneshot};
+use ulid::Ulid;
 
 use crate::{
     options::Options,
-    storage::{Action, Storage},
+    recorder::{Action, Recorder},
+    soundboard::Soundboard,
 };
 
 mod options;
-mod storage;
+mod recorder;
+mod soundboard;
 mod wav;
 
 /// Max body size is 25MiB including other fields. We cut at 24MiB because calculating the rest of
@@ -54,15 +61,36 @@ const MAX_FILE_SIZE: usize = 24 * (1 << 20);
 #[derive(Clone)]
 struct Handler {
     bot_id: Arc<AtomicU64>,
-    actions_tx: UnboundedSender<Action>,
+    recorder_actions_tx: UnboundedSender<Action>,
+    soundboard: Arc<Soundboard>,
 }
 
 #[async_trait]
 impl EventHandler for Handler {
     async fn ready(&self, ctx: Context, data_about_bot: Ready) {
+        info!("bot ready");
         self.bot_id
             .store(*data_about_bot.user.id.as_u64(), Ordering::Relaxed);
         create_global_commands(&ctx).await;
+
+        let message = ctx
+            .cache
+            .guild_channel(658770754984345603)
+            .unwrap()
+            .send_message(&ctx, |message| {
+                message.components(|components| {
+                    components.create_action_row(|row| {
+                        row.create_button(|button| {
+                            button
+                                .custom_id("id_0")
+                                .label("Sound 1")
+                                .emoji(ReactionType::from('💦'))
+                        })
+                    })
+                })
+            })
+            .await
+            .unwrap();
     }
 
     async fn voice_state_update(&self, ctx: Context, old: Option<VoiceState>, new: VoiceState) {
@@ -75,20 +103,13 @@ impl EventHandler for Handler {
     }
 
     async fn interaction_create(&self, ctx: Context, interaction: Interaction) {
-        let Interaction::ApplicationCommand(command) = interaction else {
-            return;
-        };
-
-        match command.data.name.as_str() {
-            "download" => self.download(ctx, command).await,
-            "list" => self.list(ctx, command).await,
-            "join" => self.join(ctx, command).await,
-            "listen" => self.listen(ctx, command).await,
-            "leave" => self.leave(ctx, command).await,
-            "help" => self.help(ctx, command).await,
-            "version" => self.version(ctx, command).await,
-            _ => (),
-        };
+        match interaction {
+            Interaction::ApplicationCommand(command) => self.dispatch_command(ctx, command).await,
+            Interaction::MessageComponent(component) => {
+                self.dispatch_component(ctx, component).await
+            }
+            _ => return,
+        }
     }
 }
 
@@ -98,14 +119,14 @@ impl VoiceEventHandler for Handler {
         match ctx {
             EventContext::SpeakingStateUpdate(event) => {
                 if let Some(user) = event.user_id {
-                    self.actions_tx
+                    self.recorder_actions_tx
                         .send(Action::MapUser(UserId(user.0), event.ssrc))
                         .expect("Event dispatch error");
                 }
             }
             EventContext::VoicePacket(packet) => {
                 if let Some(audio) = packet.audio {
-                    self.actions_tx
+                    self.recorder_actions_tx
                         .send(Action::RegisterVoiceData(
                             packet.packet.ssrc,
                             audio
@@ -124,13 +145,75 @@ impl VoiceEventHandler for Handler {
 }
 
 impl Handler {
+    async fn dispatch_command(&self, ctx: Context, command: ApplicationCommandInteraction) {
+        match command.data.name.as_str() {
+            "help" => self.help(ctx, command).await,
+            "version" => self.version(ctx, command).await,
+            "download" => self.download(ctx, command).await,
+            "list" => self.list(ctx, command).await,
+            "join" => self.join(ctx, command).await,
+            "listen" => self.listen(ctx, command).await,
+            "leave" => self.leave(ctx, command).await,
+            "upload" => self.upload(ctx, command).await,
+            _ => (),
+        };
+    }
+
+    async fn dispatch_component(&self, ctx: Context, component: MessageComponentInteraction) {
+        // TODO: Use futures::join;
+        dbg!(&component.data.custom_id);
+        component.defer(&ctx).await.unwrap();
+
+        let wav = self
+            .soundboard
+            .get_wav(Ulid::from_string(&component.data.custom_id).expect("Invalid sound id"))
+            .await
+            .expect("Cannot find sound");
+
+        let manager = songbird::get(&ctx)
+            .await
+            .expect("Failed to get songbird manager");
+        let handler_lock = manager.get(component.guild_id.unwrap()).unwrap();
+        handler_lock.lock().await.play_source(Input::new(
+            false,
+            Reader::from_memory(wav[wav::HEADER_SIZE..].to_vec()),
+            Codec::Pcm,
+            Container::Raw,
+            None,
+        ));
+    }
+
+    async fn help(&self, ctx: Context, command: ApplicationCommandInteraction) {
+        command
+            .create_interaction_response(&ctx, |response| {
+                response
+                    .kind(InteractionResponseType::ChannelMessageWithSource)
+                    .interaction_response_data(|message| {
+                        message.content("Use Audacity to load and cut parts of the recordings.")
+                    })
+            })
+            .await
+            .expect("Help response failure");
+    }
+
+    async fn version(&self, ctx: Context, command: ApplicationCommandInteraction) {
+        command
+            .create_interaction_response(&ctx, |response| {
+                response
+                    .kind(InteractionResponseType::ChannelMessageWithSource)
+                    .interaction_response_data(|message| message.content(env!("CARGO_PKG_VERSION")))
+            })
+            .await
+            .expect("Version response failure");
+    }
+
     async fn list(&self, ctx: Context, command: ApplicationCommandInteraction) {
         let Some(guild) = command.guild_id else {
             return
         };
 
         let (tx, rx) = oneshot::channel();
-        self.actions_tx
+        self.recorder_actions_tx
             .send(Action::GetWhitelist(tx))
             .expect("List request failure");
 
@@ -166,7 +249,7 @@ impl Handler {
     }
 
     async fn join(&self, ctx: Context, command: ApplicationCommandInteraction) {
-        self.actions_tx
+        self.recorder_actions_tx
             .send(Action::AddToWhitelist(command.user.id))
             .expect("Adding to whitelist failed");
 
@@ -183,7 +266,7 @@ impl Handler {
     }
 
     async fn leave(&self, ctx: Context, command: ApplicationCommandInteraction) {
-        self.actions_tx
+        self.recorder_actions_tx
             .send(Action::RemoveFromWhitelist(command.user.id))
             .expect("Leaving whitelist failed");
 
@@ -256,7 +339,7 @@ impl Handler {
         };
 
         let (tx, rx) = oneshot::channel::<Option<VecDeque<i16>>>();
-        self.actions_tx
+        self.recorder_actions_tx
             .send(Action::GetData(requested_user.id, tx))
             .expect("Download request failure");
 
@@ -301,28 +384,85 @@ impl Handler {
         }
     }
 
-    async fn help(&self, ctx: Context, command: ApplicationCommandInteraction) {
+    async fn upload(&self, ctx: Context, command: ApplicationCommandInteraction) {
+        let Some(guild) = command.guild_id else {
+            return;
+        };
+        let Some(sound) = find_option(&command, "sound").and_then(|opt| {
+            match opt {
+                CommandDataOptionValue::Attachment(att) => Some(att),
+                _ => None,
+            }
+        }) else {
+            return;
+        };
+        let Some(name) = find_option(&command, "name").and_then(|opt| {
+            match opt {
+                CommandDataOptionValue::String(s) => Some(s),
+                _ => None,
+            }
+        }) else {
+            return;
+        };
+        let Some(color) = find_option(&command, "color").and_then(|opt| {
+            match opt {
+                CommandDataOptionValue::String(s) => Some(s),
+                _ => None,
+            }
+        }) else {
+            return;
+        };
+        let Some(group) = find_option(&command, "group").and_then(|opt| {
+            match opt {
+                CommandDataOptionValue::String(s) => Some(s),
+                _ => None,
+            }
+        }) else {
+            return;
+        };
+        let emoji = find_option(&command, "emoji").and_then(|opt| match opt {
+            CommandDataOptionValue::String(s) => s.chars().next(),
+            _ => None,
+        });
+        let index = find_option(&command, "index").and_then(|opt| match opt {
+            CommandDataOptionValue::Integer(n) => Some(*n as usize),
+            _ => None,
+        });
+
+        dbg!(sound, name, color, group, emoji, index);
+        let id = self
+            .soundboard
+            .add(
+                &sound.url,
+                guild,
+                name.clone(),
+                emoji,
+                ButtonStyle::Primary,
+                group.clone(),
+            )
+            .await
+            .expect("Sound saving failed");
+
         command
             .create_interaction_response(&ctx, |response| {
                 response
                     .kind(InteractionResponseType::ChannelMessageWithSource)
                     .interaction_response_data(|message| {
-                        message.content("Use Audacity to load and cut parts of the recordings.")
+                        message.components(|components| {
+                            components.create_action_row(|row| {
+                                row.create_button(|button| {
+                                    button.custom_id(id.to_string()).label(name);
+                                    if let Some(emoji) = emoji {
+                                        button.emoji(ReactionType::from(emoji));
+                                    }
+                                    button
+                                })
+                            })
+                        })
                     })
             })
             .await
-            .expect("Help response failure");
-    }
-
-    async fn version(&self, ctx: Context, command: ApplicationCommandInteraction) {
-        command
-            .create_interaction_response(&ctx, |response| {
-                response
-                    .kind(InteractionResponseType::ChannelMessageWithSource)
-                    .interaction_response_data(|message| message.content(env!("CARGO_PKG_VERSION")))
-            })
-            .await
-            .expect("Version response failure");
+            .expect("Failed to create button");
     }
 
     async fn disconnect_if_alone(&self, ctx: &Context, channel: ChannelId) {
@@ -350,7 +490,24 @@ impl Handler {
 }
 
 async fn create_global_commands(ctx: &Context) {
+    info!("creating global commands");
     Command::set_global_application_commands(ctx, |builder| {
+        // Help.
+        builder.create_application_command(|command| {
+            command
+                .kind(CommandType::ChatInput)
+                .name("help")
+                .description("Display help")
+        });
+
+        // Version.
+        builder.create_application_command(|command| {
+            command
+                .kind(CommandType::ChatInput)
+                .name("version")
+                .description("Display help")
+        });
+
         // Get whitelist.
         builder.create_application_command(|command| {
             command
@@ -398,24 +555,63 @@ async fn create_global_commands(ctx: &Context) {
                 })
         });
 
-        // Help.
+        // Upload.
         builder.create_application_command(|command| {
             command
                 .kind(CommandType::ChatInput)
-                .name("help")
-                .description("Display help")
-        });
-
-        // Version.
-        builder.create_application_command(|command| {
-            command
-                .kind(CommandType::ChatInput)
-                .name("version")
-                .description("Display help")
+                .name("upload")
+                .description("Upload sound")
+                .create_option(|option| {
+                    option
+                        .kind(CommandOptionType::Attachment)
+                        .name("sound")
+                        .description("WAV sound file")
+                        .required(true)
+                })
+                .create_option(|option| {
+                    option
+                        .kind(CommandOptionType::String)
+                        .name("name")
+                        .description("The name of the sound that will appear on the button")
+                        .required(true)
+                })
+                .create_option(|option| {
+                    option
+                        .kind(CommandOptionType::String)
+                        .name("color")
+                        .add_string_choice("blue", "blue")
+                        .add_string_choice("green", "green")
+                        .add_string_choice("red", "red")
+                        .add_string_choice("grey", "grey")
+                        .description("Color of the button")
+                        .required(true)
+                })
+                .create_option(|option| {
+                    option
+                        .kind(CommandOptionType::String)
+                        .name("group")
+                        .description("The group to add this sound to")
+                        .required(true)
+                })
+                .create_option(|option| {
+                    option
+                        .kind(CommandOptionType::String)
+                        .name("emoji")
+                        .description("The emoji to prepend to the button")
+                        .required(false)
+                })
+                .create_option(|option| {
+                    option
+                        .kind(CommandOptionType::Integer)
+                        .name("index")
+                        .description("The position of the sound in its group")
+                        .required(false)
+                })
         })
     })
     .await
     .expect("Global commands creation failure");
+    info!("global commands created");
 }
 
 async fn find_voice_channel(ctx: &Context, guild: GuildId, user: UserId) -> Option<ChannelId> {
@@ -437,6 +633,19 @@ async fn find_voice_channel(ctx: &Context, guild: GuildId, user: UserId) -> Opti
     None
 }
 
+fn find_option<'a>(
+    command: &'a ApplicationCommandInteraction,
+    name: &str,
+) -> Option<&'a CommandDataOptionValue> {
+    command
+        .data
+        .options
+        .iter()
+        .find(|opt| opt.name == name)
+        .map(|opt| opt.resolved.as_ref())
+        .flatten()
+}
+
 #[tokio::main]
 async fn main() -> ExitCode {
     let options = Options::parse();
@@ -446,19 +655,28 @@ async fn main() -> ExitCode {
         .init();
     log_panics::init();
 
-    let storage = Storage::new(
+    let recorder = Recorder::new(
         options.voice_buffer_duration,
         options.voice_buffer_expiration,
         options.whitelist_path,
     )
     .await;
-    let tx = storage.run_loop();
+    let tx = recorder.run_loop();
+
+    let soundboard = Soundboard::new(
+        "soundboard".into(),
+        ".".into(),
+        Duration::from_secs(10),
+        Duration::from_secs(3 * 60),
+    )
+    .await;
 
     let intents = GatewayIntents::all();
     let mut client = Client::builder(options.discord_token, intents)
         .event_handler(Handler {
             bot_id: Arc::new(AtomicU64::new(0)),
-            actions_tx: tx,
+            recorder_actions_tx: tx,
+            soundboard: Arc::new(soundboard),
         })
         .register_songbird_from_config(songbird::Config::default().decode_mode(DecodeMode::Decode))
         .await
