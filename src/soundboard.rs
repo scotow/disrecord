@@ -1,17 +1,15 @@
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
+    sync::Arc,
     time::{Duration, Instant},
 };
 
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
-use serenity::{
-    futures::TryFutureExt,
-    model::{application::component::ButtonStyle, channel::Attachment, id::GuildId},
-};
+use serenity::model::{application::component::ButtonStyle, channel::Attachment, id::GuildId};
 use thiserror::Error as ThisError;
-use tokio::{fs, fs::OpenOptions, io::AsyncWriteExt, sync::Mutex};
+use tokio::{fs, fs::OpenOptions, io::AsyncWriteExt, sync::Mutex, time::sleep};
 use ulid::Ulid;
 
 use crate::wav;
@@ -35,7 +33,7 @@ impl Soundboard {
         let sounds = fs::read(&metadata_path)
             .await
             .ok()
-            .map(|mut file| {
+            .map(|file| {
                 let mut sounds = HashMap::new();
                 let mut data = file.as_slice();
                 while !data.is_empty() {
@@ -61,6 +59,21 @@ impl Soundboard {
             cache_duration,
             sounds: Mutex::new(sounds),
         }
+    }
+
+    pub fn cache_loop(self: Arc<Self>) {
+        tokio::spawn(async move {
+            loop {
+                sleep(Duration::from_secs(30)).await;
+                for sound in self.sounds.lock().await.values_mut() {
+                    if let CachedSound::Cached(_, last) = &mut sound.data {
+                        if last.elapsed() > self.cache_duration {
+                            sound.data = CachedSound::Fs;
+                        }
+                    }
+                }
+            }
+        });
     }
 
     pub async fn list(&self, guild: GuildId) -> Vec<(String, Vec<SoundMetadata>)> {
@@ -198,7 +211,7 @@ impl Sound {
     async fn get_wav_data(&mut self, dir_path: &Path) -> Option<Vec<u8>> {
         match &mut self.data {
             CachedSound::Fs => {
-                let mut path = self.metadata.get_file_path(dir_path);
+                let path = self.metadata.get_file_path(dir_path);
                 let data = fs::read(&path).await.ok()?;
                 self.data = CachedSound::Cached(data.clone(), Instant::now());
                 Some(data)

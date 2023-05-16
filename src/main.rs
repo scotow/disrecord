@@ -6,7 +6,6 @@ use std::{
         atomic::{AtomicU64, Ordering},
         Arc,
     },
-    time::Duration,
 };
 
 use clap::Parser;
@@ -19,7 +18,7 @@ use serenity::{
     model::{
         application::{
             command::{Command, CommandOptionType, CommandType},
-            component::{ButtonStyle, InputTextStyle},
+            component::ButtonStyle,
             interaction::{
                 application_command::{ApplicationCommandInteraction, CommandDataOptionValue},
                 message_component::MessageComponentInteraction,
@@ -768,20 +767,23 @@ async fn main() -> ExitCode {
     .await;
     let tx = recorder.run_loop();
 
-    let soundboard = Soundboard::new(
-        options.soundboard_metadata_path,
-        options.sounds_dir_path,
-        options.sound_max_duration,
-        options.sound_cache_duration,
-    )
-    .await;
+    let soundboard = Arc::new(
+        Soundboard::new(
+            options.soundboard_metadata_path,
+            options.sounds_dir_path,
+            options.sound_max_duration,
+            options.sound_cache_duration,
+        )
+        .await,
+    );
+    Arc::clone(&soundboard).cache_loop();
 
     let intents = GatewayIntents::all();
     let mut client = Client::builder(options.discord_token, intents)
         .event_handler(Handler {
             bot_id: Arc::new(AtomicU64::new(0)),
             recorder_actions_tx: tx,
-            soundboard: Arc::new(soundboard),
+            soundboard,
         })
         .register_songbird_from_config(songbird::Config::default().decode_mode(DecodeMode::Decode))
         .await
