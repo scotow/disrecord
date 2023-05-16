@@ -111,6 +111,14 @@ impl Soundboard {
             .map_err(|_| SoundboardError::SoundFetch)?
             .to_vec();
 
+        let mut sounds = self.sounds.lock().await;
+        if sounds
+            .values()
+            .any(|sound| sound.metadata.guild == guild.0 && sound.metadata.name == name)
+        {
+            return Err(SoundboardError::NameTaken);
+        }
+
         let id = Ulid::new();
         let metadata = SoundMetadata {
             guild: guild.0,
@@ -135,7 +143,7 @@ impl Soundboard {
             .await
             .map_err(|_| SoundboardError::SoundWrite)?;
 
-        self.sounds.lock().await.insert(
+        sounds.insert(
             metadata.id,
             Sound {
                 metadata,
@@ -196,6 +204,8 @@ impl Sound {
 
 #[derive(ThisError, Debug)]
 pub enum SoundboardError {
+    #[error("A sound with the same name already exists.")]
+    NameTaken,
     #[error("Sound too long.")]
     TooLong,
     #[error("Failed to fetch sound from Discord server.")]

@@ -19,7 +19,7 @@ use serenity::{
     model::{
         application::{
             command::{Command, CommandOptionType, CommandType},
-            component::ButtonStyle,
+            component::{ButtonStyle, InputTextStyle},
             interaction::{
                 application_command::{ApplicationCommandInteraction, CommandDataOptionValue},
                 message_component::MessageComponentInteraction,
@@ -78,15 +78,40 @@ impl EventHandler for Handler {
             .guild_channel(658770754984345603)
             .unwrap()
             .send_message(&ctx, |message| {
+                // message.content("Test:");
                 message.components(|components| {
                     components.create_action_row(|row| {
-                        row.create_button(|button| {
-                            button
-                                .custom_id("id_0")
-                                .label("Sound 1")
-                                .emoji(ReactionType::from('💦'))
-                        })
+                        // row.create_select_menu(|menu| {
+                        //     menu.custom_id("animal_select").disabled(true).options(|f| {
+                        //         f.create_option(|o| {
+                        //             o.label("🐈 meow").value("Cat").default_selection(true)
+                        //         })
+                        //     })
+                        // })
+                        row.create_input_text(|text| {
+                            text.custom_id("test");
+                            text.label("test");
+                            text.placeholder("test");
+                            text.style(InputTextStyle::Short);
+                            text.value("test")
+                        });
+                        dbg!(&row);
+                        row
                     })
+                    // row.create_input_text(|input| {
+                    //     input
+                    //         .custom_id("aaaaaa")
+                    //         .style(InputTextStyle::Short)
+                    //         .label("aaa")
+                    // })
+                    // components.create_action_row(|row| {
+                    //     row.create_button(|button| {
+                    //         button
+                    //             .custom_id("id_0")
+                    //             .label("Sound 1")
+                    //             .emoji(ReactionType::from('💦'))
+                    //     })
+                    // })
                 })
             })
             .await
@@ -430,7 +455,8 @@ impl Handler {
         });
 
         dbg!(sound, name, color, group, emoji, index);
-        let id = self
+
+        match self
             .soundboard
             .add(
                 &sound.url,
@@ -441,28 +467,40 @@ impl Handler {
                 group.clone(),
             )
             .await
-            .expect("Sound saving failed");
-
-        command
-            .create_interaction_response(&ctx, |response| {
-                response
-                    .kind(InteractionResponseType::ChannelMessageWithSource)
-                    .interaction_response_data(|message| {
-                        message.components(|components| {
-                            components.create_action_row(|row| {
-                                row.create_button(|button| {
-                                    button.custom_id(id.to_string()).label(name);
-                                    if let Some(emoji) = emoji {
-                                        button.emoji(ReactionType::from(emoji));
-                                    }
-                                    button
+        {
+            Ok(id) => {
+                command
+                    .create_interaction_response(&ctx, |response| {
+                        response
+                            .kind(InteractionResponseType::ChannelMessageWithSource)
+                            .interaction_response_data(|message| {
+                                message.components(|components| {
+                                    components.create_action_row(|row| {
+                                        row.create_button(|button| {
+                                            button.custom_id(id.to_string()).label(name);
+                                            if let Some(emoji) = emoji {
+                                                button.emoji(ReactionType::from(emoji));
+                                            }
+                                            button
+                                        })
+                                    })
                                 })
                             })
-                        })
                     })
-            })
-            .await
-            .expect("Failed to create button");
+                    .await
+                    .expect("Failed to sound button");
+            }
+            Err(err) => {
+                command
+                    .create_interaction_response(&ctx, |response| {
+                        response
+                            .kind(InteractionResponseType::ChannelMessageWithSource)
+                            .interaction_response_data(|message| message.content(err.to_string()))
+                    })
+                    .await
+                    .expect("Cannot send sound creation error message");
+            }
+        }
     }
 
     async fn disconnect_if_alone(&self, ctx: &Context, channel: ChannelId) {
