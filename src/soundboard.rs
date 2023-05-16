@@ -5,6 +5,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use bincode::Options;
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use serenity::model::{application::component::ButtonStyle, channel::Attachment, id::GuildId};
@@ -34,12 +35,18 @@ impl Soundboard {
             .await
             .ok()
             .map(|file| {
+                let mut deserializer = bincode::Deserializer::from_slice(
+                    &file,
+                    bincode::DefaultOptions::new()
+                        .with_fixint_encoding()
+                        .allow_trailing_bytes(),
+                );
                 let mut sounds = HashMap::new();
-                let mut data = file.as_slice();
-                while !data.is_empty() {
-                    let metadata = bincode::deserialize::<SoundMetadata>(&data)
-                        .expect("Failed to deserialize sound metadata");
-                    data = &data[bincode::serialized_size(&metadata).unwrap() as usize..];
+                loop {
+                    let metadata = match SoundMetadata::deserialize(&mut deserializer) {
+                        Ok(metadata) => metadata,
+                        Err(_) => break,
+                    };
                     sounds.insert(
                         metadata.id,
                         Sound {
