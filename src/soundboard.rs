@@ -51,7 +51,6 @@ impl Soundboard {
                 sounds
             })
             .unwrap_or_default();
-        dbg!(&sounds);
 
         Self {
             metadata_path,

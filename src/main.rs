@@ -752,16 +752,16 @@ async fn main() -> ExitCode {
     let recorder = Recorder::new(
         options.voice_buffer_duration,
         options.voice_buffer_expiration,
-        options.whitelist_path,
+        options.record_whitelist_path,
     )
     .await;
     let tx = recorder.run_loop();
 
     let soundboard = Soundboard::new(
-        "soundboard".into(),
-        ".".into(),
-        Duration::from_secs(10),
-        Duration::from_secs(3 * 60),
+        options.soundboard_metadata_path,
+        options.sounds_dir_path,
+        options.sound_max_duration,
+        options.sound_cache_duration,
     )
     .await;
 
