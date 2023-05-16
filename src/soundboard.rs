@@ -181,6 +181,34 @@ impl Soundboard {
 
         Ok(id)
     }
+
+    pub async fn delete(&self, guild: GuildId, name: &str) -> Result<(), SoundboardError> {
+        let mut sounds = self.sounds.lock().await;
+        let id = sounds
+            .iter()
+            .find_map(|(id, sound)| {
+                (sound.metadata.guild == guild.0 && sound.metadata.name == name).then_some(*id)
+            })
+            .ok_or(SoundboardError::SoundNotFound)?;
+        sounds.remove(&id);
+
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&self.metadata_path)
+            .await
+            .map_err(|_| SoundboardError::SoundWrite)?;
+        for sound in sounds.values() {
+            file.write(
+                &bincode::serialize(&sound.metadata).map_err(|_| SoundboardError::SoundWrite)?,
+            )
+            .await
+            .map_err(|_| SoundboardError::SoundWrite)?;
+        }
+
+        Ok(())
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -243,4 +271,6 @@ pub enum SoundboardError {
     InvalidSound,
     #[error("Failed to save file.")]
     SoundWrite,
+    #[error("Cannot find that sound.")]
+    SoundNotFound,
 }

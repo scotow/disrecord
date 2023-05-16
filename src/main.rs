@@ -143,6 +143,7 @@ impl Handler {
             // Soundboard.
             "sounds" => self.list_sounds(ctx, command).await,
             "upload" => self.upload(ctx, command).await,
+            "delete" => self.delete(ctx, command).await,
             _ => (),
         };
     }
@@ -236,7 +237,7 @@ impl Handler {
                         message.content(if list.is_empty() {
                             "*Nobody.*".to_owned()
                         } else {
-                            list.into_iter().map( Mention::from).join(", ")
+                            list.into_iter().map(Mention::from).join(", ")
                         })
                     })
             })
@@ -479,7 +480,6 @@ impl Handler {
             return;
         };
         let Some(color) = find_option(&command, "color").and_then(|opt| {
-            dbg!(opt);
             match opt {
                 CommandDataOptionValue::String(s) => Some(match s.as_str() {
                     "blue" => ButtonStyle::Primary,
@@ -559,6 +559,33 @@ impl Handler {
                     .expect("Cannot send sound creation error message");
             }
         }
+    }
+
+    async fn delete(&self, ctx: Context, command: ApplicationCommandInteraction) {
+        let Some(guild) = command.guild_id else {
+            return;
+        };
+        let Some(name) = find_option(&command, "sound").and_then(|opt| {
+            match opt {
+                CommandDataOptionValue::String(s) => Some(s),
+                _ => None,
+            }
+        }) else {
+            return;
+        };
+
+        let text = match self.soundboard.delete(guild, name).await {
+            Ok(()) => "Deleted. *(for ever)*".to_owned(),
+            Err(err) => err.to_string(),
+        };
+        command
+            .create_interaction_response(&ctx, |response| {
+                response
+                    .kind(InteractionResponseType::ChannelMessageWithSource)
+                    .interaction_response_data(|message| message.content(text))
+            })
+            .await
+            .expect("Cannot send sound creation error message");
     }
 
     async fn disconnect_if_alone(&self, ctx: &Context, channel: ChannelId) {
@@ -710,6 +737,21 @@ async fn register_global_commands(ctx: &Context) {
                         .name("index")
                         .description("The position of the sound in its group")
                         .required(false)
+                })
+        });
+
+        // Delete.
+        builder.create_application_command(|command| {
+            command
+                .kind(CommandType::ChatInput)
+                .name("delete")
+                .description("Delete a sound from the soundboard")
+                .create_option(|option| {
+                    option
+                        .kind(CommandOptionType::String)
+                        .name("sound")
+                        .description("Sound name to delete")
+                        .required(true)
                 })
         })
     })

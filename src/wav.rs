@@ -48,7 +48,7 @@ mod tests {
     const BITS_PER_SAMPLE: u32 = i16::BITS;
     const CHANNELS: u16 = 1;
 
-    use super::{HEADER_SIZE};
+    use super::HEADER_SIZE;
 
     #[test]
     fn package() {
