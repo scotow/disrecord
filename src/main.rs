@@ -57,6 +57,8 @@ mod wav;
 /// Max body size is 25MiB including other fields. We cut at 24MiB because calculating the rest of
 /// the body is too unreliable.
 const MAX_FILE_SIZE: usize = 24 * (1 << 20);
+const ROWS_PER_MESSAGE: usize = 5;
+const SOUNDS_PER_ROW: usize = 5;
 
 #[derive(Clone)]
 struct Handler {
@@ -71,51 +73,7 @@ impl EventHandler for Handler {
         info!("bot ready");
         self.bot_id
             .store(*data_about_bot.user.id.as_u64(), Ordering::Relaxed);
-        create_global_commands(&ctx).await;
-
-        let message = ctx
-            .cache
-            .guild_channel(658770754984345603)
-            .unwrap()
-            .send_message(&ctx, |message| {
-                // message.content("Test:");
-                message.components(|components| {
-                    components.create_action_row(|row| {
-                        // row.create_select_menu(|menu| {
-                        //     menu.custom_id("animal_select").disabled(true).options(|f| {
-                        //         f.create_option(|o| {
-                        //             o.label("🐈 meow").value("Cat").default_selection(true)
-                        //         })
-                        //     })
-                        // })
-                        row.create_input_text(|text| {
-                            text.custom_id("test");
-                            text.label("test");
-                            text.placeholder("test");
-                            text.style(InputTextStyle::Short);
-                            text.value("test")
-                        });
-                        dbg!(&row);
-                        row
-                    })
-                    // row.create_input_text(|input| {
-                    //     input
-                    //         .custom_id("aaaaaa")
-                    //         .style(InputTextStyle::Short)
-                    //         .label("aaa")
-                    // })
-                    // components.create_action_row(|row| {
-                    //     row.create_button(|button| {
-                    //         button
-                    //             .custom_id("id_0")
-                    //             .label("Sound 1")
-                    //             .emoji(ReactionType::from('💦'))
-                    //     })
-                    // })
-                })
-            })
-            .await
-            .unwrap();
+        register_global_commands(&ctx).await;
     }
 
     async fn voice_state_update(&self, ctx: Context, old: Option<VoiceState>, new: VoiceState) {
@@ -172,13 +130,19 @@ impl VoiceEventHandler for Handler {
 impl Handler {
     async fn dispatch_command(&self, ctx: Context, command: ApplicationCommandInteraction) {
         match command.data.name.as_str() {
-            "help" => self.help(ctx, command).await,
+            // Common.
             "version" => self.version(ctx, command).await,
+            "help" => self.help(ctx, command).await,
+            "listen" => self.listen(ctx, command).await,
+
+            // Record.
             "download" => self.download(ctx, command).await,
             "list" => self.list(ctx, command).await,
             "join" => self.join(ctx, command).await,
-            "listen" => self.listen(ctx, command).await,
             "leave" => self.leave(ctx, command).await,
+
+            // Soundboard.
+            "sounds" => self.list_sounds(ctx, command).await,
             "upload" => self.upload(ctx, command).await,
             _ => (),
         };
@@ -208,6 +172,17 @@ impl Handler {
         ));
     }
 
+    async fn version(&self, ctx: Context, command: ApplicationCommandInteraction) {
+        command
+            .create_interaction_response(&ctx, |response| {
+                response
+                    .kind(InteractionResponseType::ChannelMessageWithSource)
+                    .interaction_response_data(|message| message.content(env!("CARGO_PKG_VERSION")))
+            })
+            .await
+            .expect("Version response failure");
+    }
+
     async fn help(&self, ctx: Context, command: ApplicationCommandInteraction) {
         command
             .create_interaction_response(&ctx, |response| {
@@ -219,17 +194,6 @@ impl Handler {
             })
             .await
             .expect("Help response failure");
-    }
-
-    async fn version(&self, ctx: Context, command: ApplicationCommandInteraction) {
-        command
-            .create_interaction_response(&ctx, |response| {
-                response
-                    .kind(InteractionResponseType::ChannelMessageWithSource)
-                    .interaction_response_data(|message| message.content(env!("CARGO_PKG_VERSION")))
-            })
-            .await
-            .expect("Version response failure");
     }
 
     async fn list(&self, ctx: Context, command: ApplicationCommandInteraction) {
@@ -409,6 +373,83 @@ impl Handler {
         }
     }
 
+    async fn list_sounds(&self, ctx: Context, command: ApplicationCommandInteraction) {
+        let Some(guild) = command.guild_id else {
+            return;
+        };
+
+        let sounds = self.soundboard.list(guild).await;
+        if sounds.is_empty() {
+            command
+                .create_interaction_response(&ctx, |response| {
+                    response
+                        .kind(InteractionResponseType::ChannelMessageWithSource)
+                        .interaction_response_data(|message| {
+                            message.content("There is no sounds uploaded to this server...yet.")
+                        })
+                })
+                .await
+                .expect("Cannot send empty soundboard message");
+            return;
+        }
+
+        command
+            .defer(&ctx)
+            .await
+            .expect("Failed to defer sound list");
+        command
+            .delete_original_interaction_response(&ctx)
+            .await
+            .expect("Failed to delete original sound list interaction");
+        for (group, sounds) in sounds {
+            // Send the group name once then at most 4 sound rows per message.
+            for (message_index, sounds_message) in sounds
+                .chunks((ROWS_PER_MESSAGE - 1) * SOUNDS_PER_ROW)
+                .enumerate()
+            {
+                command
+                    .channel_id
+                    .send_message(&ctx, |message| {
+                        message.components(|components| {
+                            if message_index == 0 {
+                                components.create_action_row(|row| {
+                                    row.create_select_menu(|menu| {
+                                        menu.custom_id("group").options(|menu_options| {
+                                            menu_options.create_option(|option| {
+                                                option
+                                                    .label(&group)
+                                                    .value(&group)
+                                                    .default_selection(true)
+                                            })
+                                        })
+                                    })
+                                });
+                            }
+                            for sounds_row in sounds_message.chunks(SOUNDS_PER_ROW) {
+                                components.create_action_row(|row| {
+                                    for sound in sounds_row {
+                                        row.create_button(|button| {
+                                            button
+                                                .custom_id(sound.id.to_string())
+                                                .label(&sound.name);
+                                            if let Some(emoji) = sound.emoji {
+                                                button.emoji(ReactionType::from(emoji));
+                                            }
+                                            button
+                                        });
+                                    }
+                                    row
+                                });
+                            }
+                            components
+                        })
+                    })
+                    .await
+                    .expect("Failed to send sounds list");
+            }
+        }
+    }
+
     async fn upload(&self, ctx: Context, command: ApplicationCommandInteraction) {
         let Some(guild) = command.guild_id else {
             return;
@@ -431,7 +472,13 @@ impl Handler {
         };
         let Some(color) = find_option(&command, "color").and_then(|opt| {
             match opt {
-                CommandDataOptionValue::String(s) => Some(s),
+                CommandDataOptionValue::String(s) => Some(match s.as_str() {
+                    "blue" => ButtonStyle::Primary,
+                    "green" => ButtonStyle::Success,
+                    "red" => ButtonStyle::Danger,
+                    "grey" => ButtonStyle::Secondary,
+                    _ => ButtonStyle::Primary,
+                }),
                 _ => None,
             }
         }) else {
@@ -450,7 +497,7 @@ impl Handler {
             _ => None,
         });
         let index = find_option(&command, "index").and_then(|opt| match opt {
-            CommandDataOptionValue::Integer(n) => Some(*n as usize),
+            CommandDataOptionValue::Integer(n) => Some((*n - 1) as usize),
             _ => None,
         });
 
@@ -463,8 +510,9 @@ impl Handler {
                 guild,
                 name.clone(),
                 emoji,
-                ButtonStyle::Primary,
+                color,
                 group.clone(),
+                index,
             )
             .await
         {
@@ -527,22 +575,22 @@ impl Handler {
     }
 }
 
-async fn create_global_commands(ctx: &Context) {
+async fn register_global_commands(ctx: &Context) {
     info!("creating global commands");
     Command::set_global_application_commands(ctx, |builder| {
-        // Help.
-        builder.create_application_command(|command| {
-            command
-                .kind(CommandType::ChatInput)
-                .name("help")
-                .description("Display help")
-        });
-
         // Version.
         builder.create_application_command(|command| {
             command
                 .kind(CommandType::ChatInput)
                 .name("version")
+                .description("Display help")
+        });
+
+        // Help.
+        builder.create_application_command(|command| {
+            command
+                .kind(CommandType::ChatInput)
+                .name("help")
                 .description("Display help")
         });
 
@@ -591,6 +639,14 @@ async fn create_global_commands(ctx: &Context) {
                         .description("User to download data for")
                         .required(true)
                 })
+        });
+
+        // List sounds.
+        builder.create_application_command(|command| {
+            command
+                .kind(CommandType::ChatInput)
+                .name("sounds")
+                .description("List all sounds available on this server")
         });
 
         // Upload.

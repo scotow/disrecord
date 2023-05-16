@@ -4,6 +4,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use itertools::Itertools;
 use reqwest::{header, Client};
 use serde::{Deserialize, Serialize};
 use serenity::model::{application::component::ButtonStyle, id::GuildId};
@@ -61,6 +62,24 @@ impl Soundboard {
         }
     }
 
+    pub async fn list(&self, guild: GuildId) -> Vec<(String, Vec<SoundMetadata>)> {
+        self.sounds
+            .lock()
+            .await
+            .values()
+            .filter(|sound| sound.metadata.guild == guild.0)
+            .into_group_map_by(|sound| &sound.metadata.group)
+            .into_iter()
+            .sorted_by(|(g1, _), (g2, _)| g1.cmp(g2))
+            .map(|(g, s)| {
+                let mut sounds = s.into_iter().map(|s| s.metadata.clone()).collect_vec();
+                sounds
+                    .sort_by(|s1, s2| s1.index.cmp(&s2.index).then_with(|| s1.name.cmp(&s2.name)));
+                (g.clone(), sounds)
+            })
+            .collect()
+    }
+
     pub async fn get_wav(&self, id: Ulid) -> Option<Vec<u8>> {
         self.sounds
             .lock()
@@ -79,6 +98,7 @@ impl Soundboard {
         emoji: Option<char>,
         color: ButtonStyle,
         group: String,
+        index: Option<usize>,
     ) -> Result<Ulid, SoundboardError> {
         let mut client = Client::new();
 
@@ -127,6 +147,8 @@ impl Soundboard {
             emoji,
             color,
             group,
+            // TODO: Check index and insert last if missing.
+            index: index.unwrap_or(42),
         };
 
         // Write sound to disk.
@@ -155,14 +177,15 @@ impl Soundboard {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct SoundMetadata {
     guild: u64,
-    id: Ulid,
-    name: String,
-    emoji: Option<char>,
-    color: ButtonStyle,
+    pub id: Ulid,
+    pub name: String,
+    pub emoji: Option<char>,
+    pub color: ButtonStyle,
     group: String,
+    index: usize,
 }
 
 impl SoundMetadata {
