@@ -431,6 +431,7 @@ impl Handler {
                                         row.create_button(|button| {
                                             button
                                                 .custom_id(sound.id.to_string())
+                                                .style(sound.color)
                                                 .label(&sound.name);
                                             if let Some(emoji) = sound.emoji {
                                                 button.emoji(ReactionType::from(emoji));
@@ -471,6 +472,7 @@ impl Handler {
             return;
         };
         let Some(color) = find_option(&command, "color").and_then(|opt| {
+            dbg!(opt);
             match opt {
                 CommandDataOptionValue::String(s) => Some(match s.as_str() {
                     "blue" => ButtonStyle::Primary,
@@ -525,7 +527,10 @@ impl Handler {
                                 message.components(|components| {
                                     components.create_action_row(|row| {
                                         row.create_button(|button| {
-                                            button.custom_id(id.to_string()).label(name);
+                                            button
+                                                .custom_id(id.to_string())
+                                                .label(name)
+                                                .style(color);
                                             if let Some(emoji) = emoji {
                                                 button.emoji(ReactionType::from(emoji));
                                             }

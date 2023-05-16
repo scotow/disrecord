@@ -26,7 +26,6 @@ pub struct Options {
         default_value("5m")
     )]
     pub voice_buffer_expiration: Duration,
-
     #[arg(short = 's', long, default_value("soundboard"))]
     pub soundboard_metadata_path: PathBuf,
     #[arg(short = 'S', long, default_value("."))]
