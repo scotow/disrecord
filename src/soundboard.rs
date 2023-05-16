@@ -5,14 +5,16 @@ use std::{
 };
 
 use itertools::Itertools;
-use reqwest::{header, Client};
 use serde::{Deserialize, Serialize};
-use serenity::model::{application::component::ButtonStyle, id::GuildId};
+use serenity::{
+    futures::TryFutureExt,
+    model::{application::component::ButtonStyle, channel::Attachment, id::GuildId},
+};
 use thiserror::Error as ThisError;
 use tokio::{fs, fs::OpenOptions, io::AsyncWriteExt, sync::Mutex};
 use ulid::Ulid;
 
-use crate::wav::wav_duration_from_size;
+use crate::wav;
 
 #[derive(Debug)]
 pub struct Soundboard {
@@ -91,7 +93,7 @@ impl Soundboard {
     // TODO: Pass Attachment struct to gain size info and download helper func.
     pub async fn add(
         &self,
-        attachment_url: &str,
+        attachment: &Attachment,
         guild: GuildId,
         name: String,
         emoji: Option<char>,
@@ -99,36 +101,21 @@ impl Soundboard {
         group: String,
         index: Option<usize>,
     ) -> Result<Ulid, SoundboardError> {
-        let mut client = Client::new();
-
-        // Fetch and verify sound duration.
-        let head_response = client
-            .head(attachment_url)
-            .send()
-            .await
-            .map_err(|_| SoundboardError::SoundFetch)?;
-        let size = head_response
-            .headers()
-            .get(header::CONTENT_LENGTH)
-            .ok_or(SoundboardError::SoundFetch)?
-            .to_str()
-            .map_err(|_| SoundboardError::SoundFetch)?
-            .parse::<usize>()
-            .map_err(|_| SoundboardError::SoundFetch)?;
-        if wav_duration_from_size(size) > self.max_duration {
+        // Verify duration.
+        if wav::duration_from_size(attachment.size as usize) > self.max_duration {
             return Err(SoundboardError::TooLong);
         }
 
         // Fetch sound data.
-        let data = client
-            .get(attachment_url)
-            .send()
+        let data = attachment
+            .download()
             .await
-            .map_err(|_| SoundboardError::SoundFetch)?
-            .bytes()
-            .await
-            .map_err(|_| SoundboardError::SoundFetch)?
-            .to_vec();
+            .map_err(|_| SoundboardError::SoundFetch)?;
+
+        // Verify sound format.
+        if !wav::is_valid(&data) {
+            return Err(SoundboardError::InvalidSound);
+        }
 
         let mut sounds = self.sounds.lock().await;
         if sounds
@@ -232,6 +219,8 @@ pub enum SoundboardError {
     TooLong,
     #[error("Failed to fetch sound from Discord server.")]
     SoundFetch,
+    #[error("Sound file is not of the right format/encoding.")]
+    InvalidSound,
     #[error("Failed to save file.")]
     SoundWrite,
 }

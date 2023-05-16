@@ -149,27 +149,35 @@ impl Handler {
     }
 
     async fn dispatch_component(&self, ctx: Context, component: MessageComponentInteraction) {
-        // TODO: Use futures::join;
-        dbg!(&component.data.custom_id);
-        component.defer(&ctx).await.unwrap();
+        let Some(guild) = component.guild_id else {
+            return
+        };
 
-        let wav = self
-            .soundboard
-            .get_wav(Ulid::from_string(&component.data.custom_id).expect("Invalid sound id"))
-            .await
-            .expect("Cannot find sound");
+        let play_future = async {
+            let Some(wav) = self
+                .soundboard
+                .get_wav(Ulid::from_string(&component.data.custom_id).expect("Invalid sound id"))
+                .await else {
+                return;
+            };
 
-        let manager = songbird::get(&ctx)
-            .await
-            .expect("Failed to get songbird manager");
-        let handler_lock = manager.get(component.guild_id.unwrap()).unwrap();
-        handler_lock.lock().await.play_source(Input::new(
-            false,
-            Reader::from_memory(wav[wav::HEADER_SIZE..].to_vec()),
-            Codec::Pcm,
-            Container::Raw,
-            None,
-        ));
+            let manager = songbird::get(&ctx)
+                .await
+                .expect("Failed to get songbird manager");
+            let Some(call) = manager.get(guild) else {
+                return;
+            };
+            call.lock().await.play_source(Input::new(
+                false,
+                Reader::from_memory(wav[wav::HEADER_SIZE..].to_vec()),
+                Codec::Pcm,
+                Container::Raw,
+                None,
+            ));
+        };
+
+        let (defer, _play) = tokio::join!(component.defer(&ctx), play_future);
+        defer.expect("Failed to defer sound play");
     }
 
     async fn version(&self, ctx: Context, command: ApplicationCommandInteraction) {
@@ -455,7 +463,7 @@ impl Handler {
         let Some(guild) = command.guild_id else {
             return;
         };
-        let Some(sound) = find_option(&command, "sound").and_then(|opt| {
+        let Some(attachment) = find_option(&command, "sound").and_then(|opt| {
             match opt {
                 CommandDataOptionValue::Attachment(att) => Some(att),
                 _ => None,
@@ -503,12 +511,10 @@ impl Handler {
             _ => None,
         });
 
-        dbg!(sound, name, color, group, emoji, index);
-
         match self
             .soundboard
             .add(
-                &sound.url,
+                attachment,
                 guild,
                 name.clone(),
                 emoji,
