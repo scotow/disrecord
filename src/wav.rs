@@ -16,7 +16,7 @@ pub fn package(pcm: &[i16]) -> Vec<u8> {
     data.extend_from_slice(&((pcm.len() * 2 + HEADER_SIZE - 8) as u32).to_le_bytes()); // Total length without data up to this point
     data.extend_from_slice(HEADERS_TEMPLATE[1]);
     data.extend_from_slice(&(((pcm.len() * 2) as u32).to_le_bytes())); // PCM data length
-    data.extend(pcm.into_iter().flat_map(|n| [*n as u8, (n >> 8) as u8]));
+    data.extend(pcm.iter().flat_map(|n| [*n as u8, (n >> 8) as u8]));
     data
 }
 
@@ -25,9 +25,9 @@ pub fn is_valid(data: &[u8]) -> bool {
         return false;
     }
     &data[0..4] == HEADERS_TEMPLATE[0]
-        && &data[4..8] == ((data.len() - 8) as u32).to_le_bytes()
+        && data[4..8] == ((data.len() - 8) as u32).to_le_bytes()
         && &data[8..40] == HEADERS_TEMPLATE[1]
-        && &data[40..44] == ((data.len() - HEADER_SIZE) as u32).to_le_bytes()
+        && data[40..44] == ((data.len() - HEADER_SIZE) as u32).to_le_bytes()
 }
 
 pub fn duration_from_size(size: usize) -> Duration {
@@ -48,7 +48,7 @@ mod tests {
     const BITS_PER_SAMPLE: u32 = i16::BITS;
     const CHANNELS: u16 = 1;
 
-    use super::{HEADERS_TEMPLATE, HEADER_SIZE};
+    use super::{HEADER_SIZE};
 
     #[test]
     fn package() {

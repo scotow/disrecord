@@ -110,7 +110,7 @@ impl Soundboard {
             .await
     }
 
-    // TODO: Pass Attachment struct to gain size info and download helper func.
+    #[allow(clippy::too_many_arguments)]
     pub async fn add(
         &self,
         attachment: &Attachment,

@@ -236,7 +236,7 @@ impl Handler {
                         message.content(if list.is_empty() {
                             "*Nobody.*".to_owned()
                         } else {
-                            list.into_iter().map(|user| Mention::from(user)).join(", ")
+                            list.into_iter().map( Mention::from).join(", ")
                         })
                     })
             })
@@ -340,7 +340,7 @@ impl Handler {
             .expect("Download request failure");
 
         let data = rx.await.expect("Voice data fetching error");
-        match data.map(|data| Vec::from(data)) {
+        match data.map(Vec::from) {
             Some(data) => {
                 command.defer(&ctx).await.expect("Download defer failed");
                 for (i, chunk) in data
@@ -577,7 +577,7 @@ impl Handler {
             return;
         }
 
-        let manager = songbird::get(&ctx).await.expect("Cannot get voice manager");
+        let manager = songbird::get(ctx).await.expect("Cannot get voice manager");
         manager
             .leave(channel.guild_id)
             .await
@@ -746,8 +746,7 @@ fn find_option<'a>(
         .options
         .iter()
         .find(|opt| opt.name == name)
-        .map(|opt| opt.resolved.as_ref())
-        .flatten()
+        .and_then(|opt| opt.resolved.as_ref())
 }
 
 #[tokio::main]
