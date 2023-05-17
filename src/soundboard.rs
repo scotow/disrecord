@@ -110,6 +110,16 @@ impl Soundboard {
             .await
     }
 
+    pub async fn get_wav_by_name(&self, name: &str, guild: GuildId) -> Option<Vec<u8>> {
+        self.sounds
+            .lock()
+            .await
+            .values_mut()
+            .find(|sound| sound.metadata.guild == guild.0 && sound.metadata.name == name)?
+            .get_wav_data(&self.sounds_dir_path)
+            .await
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub async fn add(
         &self,

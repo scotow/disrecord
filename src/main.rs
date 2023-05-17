@@ -128,6 +128,7 @@ impl VoiceEventHandler for Handler {
 
 impl Handler {
     async fn dispatch_command(&self, ctx: Context, command: ApplicationCommandInteraction) {
+        dbg!(&command);
         match command.data.name.as_str() {
             // Common.
             "version" => self.version(ctx, command).await,
@@ -141,6 +142,10 @@ impl Handler {
             "leave" => self.leave(ctx, command).await,
 
             // Soundboard.
+            "soundboard" => match parse_subcommand(&command) {
+                Some("download") => self.download_sound(ctx, command).await,
+                _ => (),
+            },
             "sounds" => self.list_sounds(ctx, command).await,
             "upload" => self.upload(ctx, command).await,
             "delete" => self.delete(ctx, command).await,
@@ -169,7 +174,7 @@ impl Handler {
             };
             call.lock().await.play_source(Input::new(
                 false,
-                Reader::from_memory(wav[wav::HEADER_SIZE..].to_vec()),
+                Reader::from_memory(wav::remove_header(&wav).to_vec()),
                 Codec::Pcm,
                 Container::Raw,
                 None,
@@ -393,7 +398,7 @@ impl Handler {
                     response
                         .kind(InteractionResponseType::ChannelMessageWithSource)
                         .interaction_response_data(|message| {
-                            message.content("There is no sounds uploaded to this server...yet.")
+                            message.content("There is no sounds uploaded to this server... yet.")
                         })
                 })
                 .await
@@ -463,7 +468,7 @@ impl Handler {
         let Some(guild) = command.guild_id else {
             return;
         };
-        let Some(attachment) = find_option(&command, "sound").and_then(|opt| {
+        let Some(attachment) = find_option(&command, "sound", true).and_then(|opt| {
             match opt {
                 CommandDataOptionValue::Attachment(att) => Some(att),
                 _ => None,
@@ -471,7 +476,7 @@ impl Handler {
         }) else {
             return;
         };
-        let Some(name) = find_option(&command, "name").and_then(|opt| {
+        let Some(name) = find_option(&command, "name", true).and_then(|opt| {
             match opt {
                 CommandDataOptionValue::String(s) => Some(s),
                 _ => None,
@@ -479,7 +484,7 @@ impl Handler {
         }) else {
             return;
         };
-        let Some(color) = find_option(&command, "color").and_then(|opt| {
+        let Some(color) = find_option(&command, "color", true).and_then(|opt| {
             match opt {
                 CommandDataOptionValue::String(s) => Some(match s.as_str() {
                     "blue" => ButtonStyle::Primary,
@@ -493,7 +498,7 @@ impl Handler {
         }) else {
             return;
         };
-        let Some(group) = find_option(&command, "group").and_then(|opt| {
+        let Some(group) = find_option(&command, "group", true).and_then(|opt| {
             match opt {
                 CommandDataOptionValue::String(s) => Some(s),
                 _ => None,
@@ -501,11 +506,11 @@ impl Handler {
         }) else {
             return;
         };
-        let emoji = find_option(&command, "emoji").and_then(|opt| match opt {
+        let emoji = find_option(&command, "emoji", true).and_then(|opt| match opt {
             CommandDataOptionValue::String(s) => s.chars().next(),
             _ => None,
         });
-        let index = find_option(&command, "index").and_then(|opt| match opt {
+        let index = find_option(&command, "index", true).and_then(|opt| match opt {
             CommandDataOptionValue::Integer(n) => Some((*n - 1) as usize),
             _ => None,
         });
@@ -546,7 +551,7 @@ impl Handler {
                             })
                     })
                     .await
-                    .expect("Failed to sound button");
+                    .expect("Failed to create sound button");
             }
             Err(err) => {
                 command
@@ -565,7 +570,7 @@ impl Handler {
         let Some(guild) = command.guild_id else {
             return;
         };
-        let Some(name) = find_option(&command, "sound").and_then(|opt| {
+        let Some(name) = find_option(&command, "sound", true).and_then(|opt| {
             match opt {
                 CommandDataOptionValue::String(s) => Some(s),
                 _ => None,
@@ -586,6 +591,48 @@ impl Handler {
             })
             .await
             .expect("Cannot send sound creation error message");
+    }
+
+    async fn download_sound(&self, ctx: Context, command: ApplicationCommandInteraction) {
+        let Some(guild) = command.guild_id else {
+            return;
+        };
+        let Some(name) = find_option(&command, "sound", false).and_then(|opt| {
+            match opt {
+                CommandDataOptionValue::String(s) => Some(s),
+                _ => None,
+            }
+        }) else {
+            return;
+        };
+
+        match self.soundboard.get_wav_by_name(name, guild).await {
+            Some(data) => {
+                command.defer(&ctx).await.expect("Download defer failed");
+                // Does not support splitting.
+                command
+                    .create_followup_message(&ctx, |response| {
+                        response.add_file(AttachmentType::Bytes {
+                            data: Cow::from(data),
+                            filename: format!("{name}.wav"),
+                        })
+                    })
+                    .await
+                    .expect("Voice data transmission failure");
+            }
+            None => {
+                command
+                    .create_interaction_response(&ctx, |response| {
+                        response
+                            .kind(InteractionResponseType::ChannelMessageWithSource)
+                            .interaction_response_data(|message| {
+                                message.content("Sound not found.")
+                            })
+                    })
+                    .await
+                    .expect("Download response failure");
+            }
+        }
     }
 
     async fn disconnect_if_alone(&self, ctx: &Context, channel: ChannelId) {
@@ -753,6 +800,26 @@ async fn register_global_commands(ctx: &Context) {
                         .description("Sound name to delete")
                         .required(true)
                 })
+        });
+
+        // Download sound.
+        builder.create_application_command(|command| {
+            command
+                .kind(CommandType::ChatInput)
+                .name("soundboard")
+                .description("Add, delete or download sounds to/from the soundboard")
+                .create_option(|option| {
+                    option
+                        .kind(CommandOptionType::SubCommand)
+                        .name("download")
+                        .description("Download a sound")
+                        .create_sub_option(|sub| {
+                            sub.kind(CommandOptionType::String)
+                                .name("sound")
+                                .description("Sound name to download")
+                                .required(true)
+                        })
+                })
         })
     })
     .await
@@ -779,13 +846,26 @@ async fn find_voice_channel(ctx: &Context, guild: GuildId, user: UserId) -> Opti
     None
 }
 
+fn parse_subcommand(command: &ApplicationCommandInteraction) -> Option<&str> {
+    let first_option = command.data.options.first()?;
+    if first_option.kind != CommandOptionType::SubCommand {
+        return None;
+    };
+    Some(&first_option.name)
+}
+
+/// Only check for a depth of 1 if `top_level` if set to false.
 fn find_option<'a>(
     command: &'a ApplicationCommandInteraction,
     name: &str,
+    top_level: bool,
 ) -> Option<&'a CommandDataOptionValue> {
-    command
-        .data
-        .options
+    let options = if top_level {
+        &command.data.options
+    } else {
+        &&command.data.options.first()?.options
+    };
+    options
         .iter()
         .find(|opt| opt.name == name)
         .and_then(|opt| opt.resolved.as_ref())

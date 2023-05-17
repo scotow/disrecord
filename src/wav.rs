@@ -20,6 +20,12 @@ pub fn package(pcm: &[i16]) -> Vec<u8> {
     data
 }
 
+/// Remove the WAV header while keeping its payload unchanged (little endian).
+/// Panics if the slice is not long enough to have data.
+pub fn remove_header(wav: &[u8]) -> &[u8] {
+    &wav[HEADER_SIZE..]
+}
+
 pub fn is_valid(data: &[u8]) -> bool {
     if data.len() < HEADER_SIZE {
         return false;
@@ -74,7 +80,7 @@ mod tests {
         data.extend_from_slice(&(BITS_PER_SAMPLE as u16).to_le_bytes());
         data.extend_from_slice("data".as_bytes());
         data.extend_from_slice(&(((pcm.len() * 2) as u32).to_le_bytes())); // PCM data length
-        data.extend(pcm.iter().flat_map(|n| [*n as u8, (n >> 8) as u8]));
+        data.extend(pcm.iter().flat_map(|n| n.to_le_bytes()));
 
         assert_eq!(super::package(&pcm), data);
         assert!(super::is_valid(&data));
