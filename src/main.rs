@@ -128,27 +128,29 @@ impl VoiceEventHandler for Handler {
 
 impl Handler {
     async fn dispatch_command(&self, ctx: Context, command: ApplicationCommandInteraction) {
-        dbg!(&command);
         match command.data.name.as_str() {
             // Common.
             "version" => self.version(ctx, command).await,
             "help" => self.help(ctx, command).await,
-            "listen" => self.listen(ctx, command).await,
+            "join" => self.join_channel(ctx, command).await,
 
-            // Record.
-            "download" => self.download(ctx, command).await,
-            "list" => self.list(ctx, command).await,
-            "join" => self.join(ctx, command).await,
-            "leave" => self.leave(ctx, command).await,
+            // Recorder.
+            "recorder" => match parse_subcommand(&command) {
+                Some("list") => self.get_whitelist(ctx, command).await,
+                Some("join") => self.join_whitelist(ctx, command).await,
+                Some("leave") => self.leave_whitelist(ctx, command).await,
+                Some("download") => self.download_recording(ctx, command).await,
+                _ => (),
+            },
 
             // Soundboard.
             "soundboard" => match parse_subcommand(&command) {
+                Some("list") => self.list_sounds(ctx, command).await,
+                Some("upload") => self.upload_sound(ctx, command).await,
                 Some("download") => self.download_sound(ctx, command).await,
+                Some("delete") => self.delete_sound(ctx, command).await,
                 _ => (),
             },
-            "sounds" => self.list_sounds(ctx, command).await,
-            "upload" => self.upload(ctx, command).await,
-            "delete" => self.delete(ctx, command).await,
             _ => (),
         };
     }
@@ -209,7 +211,7 @@ impl Handler {
             .expect("Help response failure");
     }
 
-    async fn list(&self, ctx: Context, command: ApplicationCommandInteraction) {
+    async fn get_whitelist(&self, ctx: Context, command: ApplicationCommandInteraction) {
         let Some(guild) = command.guild_id else {
             return
         };
@@ -250,7 +252,7 @@ impl Handler {
             .expect("Cannot send whitelist");
     }
 
-    async fn join(&self, ctx: Context, command: ApplicationCommandInteraction) {
+    async fn join_whitelist(&self, ctx: Context, command: ApplicationCommandInteraction) {
         self.recorder_actions_tx
             .send(Action::AddToWhitelist(command.user.id))
             .expect("Adding to whitelist failed");
@@ -267,7 +269,7 @@ impl Handler {
             .expect("Adding to whitelist failed");
     }
 
-    async fn leave(&self, ctx: Context, command: ApplicationCommandInteraction) {
+    async fn leave_whitelist(&self, ctx: Context, command: ApplicationCommandInteraction) {
         self.recorder_actions_tx
             .send(Action::RemoveFromWhitelist(command.user.id))
             .expect("Leaving whitelist failed");
@@ -284,7 +286,7 @@ impl Handler {
             .expect("Leaving whitelist failed");
     }
 
-    async fn listen(&self, ctx: Context, command: ApplicationCommandInteraction) {
+    async fn join_channel(&self, ctx: Context, command: ApplicationCommandInteraction) {
         let Some(guild) = command.guild_id else {
             return
         };
@@ -328,11 +330,9 @@ impl Handler {
             .expect("Cannot send listen message");
     }
 
-    async fn download(&self, ctx: Context, command: ApplicationCommandInteraction) {
-        let Some(requested_user) = command.data.options.get(0).and_then(|option| {
-            option.resolved.as_ref()
-        }).and_then(|arg| {
-            match arg {
+    async fn download_recording(&self, ctx: Context, command: ApplicationCommandInteraction) {
+        let Some(requested_user) = find_option(&command, "user", false).and_then(|opt| {
+            match opt {
                 CommandDataOptionValue::User(user, _) => Some(user),
                 _ => None,
             }
@@ -464,11 +464,11 @@ impl Handler {
         }
     }
 
-    async fn upload(&self, ctx: Context, command: ApplicationCommandInteraction) {
+    async fn upload_sound(&self, ctx: Context, command: ApplicationCommandInteraction) {
         let Some(guild) = command.guild_id else {
             return;
         };
-        let Some(attachment) = find_option(&command, "sound", true).and_then(|opt| {
+        let Some(attachment) = find_option(&command, "sound", false).and_then(|opt| {
             match opt {
                 CommandDataOptionValue::Attachment(att) => Some(att),
                 _ => None,
@@ -476,7 +476,7 @@ impl Handler {
         }) else {
             return;
         };
-        let Some(name) = find_option(&command, "name", true).and_then(|opt| {
+        let Some(name) = find_option(&command, "name", false).and_then(|opt| {
             match opt {
                 CommandDataOptionValue::String(s) => Some(s),
                 _ => None,
@@ -484,7 +484,7 @@ impl Handler {
         }) else {
             return;
         };
-        let Some(color) = find_option(&command, "color", true).and_then(|opt| {
+        let Some(color) = find_option(&command, "color", false).and_then(|opt| {
             match opt {
                 CommandDataOptionValue::String(s) => Some(match s.as_str() {
                     "blue" => ButtonStyle::Primary,
@@ -498,7 +498,7 @@ impl Handler {
         }) else {
             return;
         };
-        let Some(group) = find_option(&command, "group", true).and_then(|opt| {
+        let Some(group) = find_option(&command, "group", false).and_then(|opt| {
             match opt {
                 CommandDataOptionValue::String(s) => Some(s),
                 _ => None,
@@ -506,11 +506,11 @@ impl Handler {
         }) else {
             return;
         };
-        let emoji = find_option(&command, "emoji", true).and_then(|opt| match opt {
+        let emoji = find_option(&command, "emoji", false).and_then(|opt| match opt {
             CommandDataOptionValue::String(s) => s.chars().next(),
             _ => None,
         });
-        let index = find_option(&command, "index", true).and_then(|opt| match opt {
+        let index = find_option(&command, "index", false).and_then(|opt| match opt {
             CommandDataOptionValue::Integer(n) => Some((*n - 1) as usize),
             _ => None,
         });
@@ -566,11 +566,11 @@ impl Handler {
         }
     }
 
-    async fn delete(&self, ctx: Context, command: ApplicationCommandInteraction) {
+    async fn delete_sound(&self, ctx: Context, command: ApplicationCommandInteraction) {
         let Some(guild) = command.guild_id else {
             return;
         };
-        let Some(name) = find_option(&command, "sound", true).and_then(|opt| {
+        let Some(name) = find_option(&command, "sound", false).and_then(|opt| {
             match opt {
                 CommandDataOptionValue::String(s) => Some(s),
                 _ => None,
@@ -678,148 +678,159 @@ async fn register_global_commands(ctx: &Context) {
                 .description("Display help")
         });
 
-        // Get whitelist.
-        builder.create_application_command(|command| {
-            command
-                .kind(CommandType::ChatInput)
-                .name("list")
-                .description("List recordable users")
-        });
-
-        // Join whitelist.
+        // Join voice channel.
         builder.create_application_command(|command| {
             command
                 .kind(CommandType::ChatInput)
                 .name("join")
-                .description("Join recordable users list")
-        });
-
-        // Leave whitelist.
-        builder.create_application_command(|command| {
-            command
-                .kind(CommandType::ChatInput)
-                .name("leave")
-                .description("Leave recordable users list")
-        });
-
-        // Listen.
-        builder.create_application_command(|command| {
-            command
-                .kind(CommandType::ChatInput)
-                .name("listen")
                 .description("Join your voice channel")
         });
 
-        // Download.
+        // Recorder.
         builder.create_application_command(|command| {
             command
                 .kind(CommandType::ChatInput)
-                .name("download")
-                .description("Download a user's voice data")
-                .create_option(|option| {
-                    option
-                        .kind(CommandOptionType::User)
-                        .name("user")
-                        .description("User to download data for")
-                        .required(true)
-                })
+                .name("recorder")
+                .description("Manage the recorder whitelist and download recordings");
+
+            // List.
+            command.create_option(|subcommand| {
+                subcommand
+                    .kind(CommandOptionType::SubCommand)
+                    .name("list")
+                    .description("Get recorder's whitelist")
+            });
+
+            // Join whitelist.
+            command.create_option(|subcommand| {
+                subcommand
+                    .kind(CommandOptionType::SubCommand)
+                    .name("join")
+                    .description("Join recorder whitelist")
+            });
+
+            // Leave whitelist.
+            command.create_option(|subcommand| {
+                subcommand
+                    .kind(CommandOptionType::SubCommand)
+                    .name("leave")
+                    .description("Leave recorder whitelist")
+            });
+
+            // Download recording.
+            command.create_option(|subcommand| {
+                subcommand
+                    .kind(CommandOptionType::SubCommand)
+                    .name("download")
+                    .description("Download a user's recording")
+                    .create_sub_option(|option| {
+                        option
+                            .kind(CommandOptionType::User)
+                            .name("user")
+                            .description("User to download data for")
+                            .required(true)
+                    })
+            })
         });
 
-        // List sounds.
-        builder.create_application_command(|command| {
-            command
-                .kind(CommandType::ChatInput)
-                .name("sounds")
-                .description("List all sounds available on this server")
-        });
-
-        // Upload.
-        builder.create_application_command(|command| {
-            command
-                .kind(CommandType::ChatInput)
-                .name("upload")
-                .description("Upload sound")
-                .create_option(|option| {
-                    option
-                        .kind(CommandOptionType::Attachment)
-                        .name("sound")
-                        .description("WAV sound file")
-                        .required(true)
-                })
-                .create_option(|option| {
-                    option
-                        .kind(CommandOptionType::String)
-                        .name("name")
-                        .description("The name of the sound that will appear on the button")
-                        .required(true)
-                })
-                .create_option(|option| {
-                    option
-                        .kind(CommandOptionType::String)
-                        .name("color")
-                        .add_string_choice("blue", "blue")
-                        .add_string_choice("green", "green")
-                        .add_string_choice("red", "red")
-                        .add_string_choice("grey", "grey")
-                        .description("Color of the button")
-                        .required(true)
-                })
-                .create_option(|option| {
-                    option
-                        .kind(CommandOptionType::String)
-                        .name("group")
-                        .description("The group to add this sound to")
-                        .required(true)
-                })
-                .create_option(|option| {
-                    option
-                        .kind(CommandOptionType::String)
-                        .name("emoji")
-                        .description("The emoji to prepend to the button")
-                        .required(false)
-                })
-                .create_option(|option| {
-                    option
-                        .kind(CommandOptionType::Integer)
-                        .name("index")
-                        .description("The position of the sound in its group")
-                        .required(false)
-                })
-        });
-
-        // Delete.
-        builder.create_application_command(|command| {
-            command
-                .kind(CommandType::ChatInput)
-                .name("delete")
-                .description("Delete a sound from the soundboard")
-                .create_option(|option| {
-                    option
-                        .kind(CommandOptionType::String)
-                        .name("sound")
-                        .description("Sound name to delete")
-                        .required(true)
-                })
-        });
-
-        // Download sound.
+        // Soundboard.
         builder.create_application_command(|command| {
             command
                 .kind(CommandType::ChatInput)
                 .name("soundboard")
-                .description("Add, delete or download sounds to/from the soundboard")
-                .create_option(|option| {
-                    option
-                        .kind(CommandOptionType::SubCommand)
-                        .name("download")
-                        .description("Download a sound")
-                        .create_sub_option(|sub| {
-                            sub.kind(CommandOptionType::String)
-                                .name("sound")
-                                .description("Sound name to download")
-                                .required(true)
-                        })
-                })
+                .description("Add, delete or download sounds to/from the soundboard");
+
+            // List.
+            command.create_option(|subcommand| {
+                subcommand
+                    .kind(CommandOptionType::SubCommand)
+                    .name("list")
+                    .description("List all sounds available on this server")
+            });
+
+            // Upload.
+            command.create_option(|subcommand| {
+                subcommand
+                    .kind(CommandOptionType::SubCommand)
+                    .name("upload")
+                    .description("Upload a sound")
+                    .create_sub_option(|option| {
+                        option
+                            .kind(CommandOptionType::Attachment)
+                            .name("sound")
+                            .description("WAV sound file")
+                            .required(true)
+                    })
+                    .create_sub_option(|option| {
+                        option
+                            .kind(CommandOptionType::String)
+                            .name("name")
+                            .description("The name of the sound that will appear on the button")
+                            .required(true)
+                    })
+                    .create_sub_option(|option| {
+                        option
+                            .kind(CommandOptionType::String)
+                            .name("color")
+                            .add_string_choice("blue", "blue")
+                            .add_string_choice("green", "green")
+                            .add_string_choice("red", "red")
+                            .add_string_choice("grey", "grey")
+                            .description("Color of the button")
+                            .required(true)
+                    })
+                    .create_sub_option(|option| {
+                        option
+                            .kind(CommandOptionType::String)
+                            .name("group")
+                            .description("The group to add this sound to")
+                            .required(true)
+                    })
+                    .create_sub_option(|option| {
+                        option
+                            .kind(CommandOptionType::String)
+                            .name("emoji")
+                            .description("The emoji to prepend to the button")
+                            .required(false)
+                    })
+                    .create_sub_option(|option| {
+                        option
+                            .kind(CommandOptionType::Integer)
+                            .name("index")
+                            .description("The position of the sound in its group")
+                            .required(false)
+                    })
+            });
+
+            // Download.
+            command.create_option(|subcommand| {
+                subcommand
+                    .kind(CommandOptionType::SubCommand)
+                    .name("download")
+                    .description("Download a sound")
+                    .create_sub_option(|option| {
+                        option
+                            .kind(CommandOptionType::String)
+                            .name("sound")
+                            .description("Sound name to download")
+                            .required(true)
+                    })
+            });
+
+            // Delete.
+            command.create_option(|subcommand| {
+                subcommand
+                    .kind(CommandOptionType::SubCommand)
+                    .name("delete")
+                    .description("Delete a sound from the soundboard")
+                    .create_sub_option(|option| {
+                        option
+                            .kind(CommandOptionType::String)
+                            .name("sound")
+                            .description("Sound name to delete")
+                            .required(true)
+                    })
+            })
         })
     })
     .await
