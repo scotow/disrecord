@@ -58,7 +58,7 @@ mod tests {
 
     #[test]
     fn package() {
-        let pcm = iter::repeat_with(|| random())
+        let pcm = iter::repeat_with(|| random::<i16>())
             .take(64 + random::<usize>() % 64)
             .collect_vec();
 
