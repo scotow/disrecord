@@ -129,7 +129,7 @@ impl Soundboard {
         emoji: Option<char>,
         color: ButtonStyle,
         group: String,
-        index: Option<usize>,
+        requested_index: Option<usize>,
     ) -> Result<Ulid, SoundboardError> {
         // Verify duration.
         if wav::duration_from_size(attachment.size as usize) > self.max_duration {
@@ -155,6 +155,40 @@ impl Soundboard {
             return Err(SoundboardError::NameTaken);
         }
 
+        // Resolve index position.
+        let mut overwrite_required = false;
+        let group_indexes = sounds.values().filter_map(|s| {
+            (s.metadata.guild == guild.0 && s.metadata.group == group).then_some(s.metadata.index)
+        });
+        let last_index = group_indexes.clone().max();
+
+        // IDEA: Append with gap of 1M. And when inserting between, insert at equal
+        // distance between (N-1) and (N+1).
+        let index = match (last_index, requested_index) {
+            (None, _) => 0,
+            (Some(last_index), None) => last_index + 1,
+            (Some(last_index), Some(requested_index)) if requested_index > last_index => {
+                last_index + 1
+            }
+            (Some(_), Some(requested_index)) => {
+                // If there is a gap in the indexes, use it.
+                if !group_indexes.clone().contains(&requested_index) {
+                    requested_index
+                } else {
+                    overwrite_required = true;
+                    for sound_index in sounds.values_mut().filter_map(|s| {
+                        (s.metadata.guild == guild.0
+                            && s.metadata.group == group
+                            && s.metadata.index >= requested_index)
+                            .then_some(&mut s.metadata.index)
+                    }) {
+                        *sound_index += 1;
+                    }
+                    requested_index
+                }
+            }
+        };
+
         let id = Ulid::new();
         let metadata = SoundMetadata {
             guild: guild.0,
@@ -163,23 +197,26 @@ impl Soundboard {
             emoji,
             color,
             group,
-            // TODO: Check index and insert last if missing.
-            index: index.unwrap_or(42),
+            index,
         };
 
         // Write sound to disk.
         fs::write(metadata.get_file_path(&self.sounds_dir_path), &data)
             .await
             .map_err(|_| SoundboardError::SoundWrite)?;
-        let mut file = OpenOptions::new()
-            .append(true)
-            .create(true)
-            .open(&self.metadata_path)
-            .await
-            .map_err(|_| SoundboardError::SoundWrite)?;
-        file.write(&bincode::serialize(&metadata).map_err(|_| SoundboardError::SoundWrite)?)
-            .await
-            .map_err(|_| SoundboardError::SoundWrite)?;
+        if overwrite_required {
+            self.overwrite_metadata_file(&sounds).await?;
+        } else {
+            let mut file = OpenOptions::new()
+                .append(true)
+                .create(true)
+                .open(&self.metadata_path)
+                .await
+                .map_err(|_| SoundboardError::SoundWrite)?;
+            file.write(&bincode::serialize(&metadata).map_err(|_| SoundboardError::SoundWrite)?)
+                .await
+                .map_err(|_| SoundboardError::SoundWrite)?;
+        }
 
         sounds.insert(
             metadata.id,
@@ -202,6 +239,13 @@ impl Soundboard {
             .ok_or(SoundboardError::SoundNotFound)?;
         sounds.remove(&id);
 
+        self.overwrite_metadata_file(&sounds).await
+    }
+
+    async fn overwrite_metadata_file(
+        &self,
+        sounds: &HashMap<Ulid, Sound>,
+    ) -> Result<(), SoundboardError> {
         let mut file = OpenOptions::new()
             .write(true)
             .create(true)
@@ -209,6 +253,7 @@ impl Soundboard {
             .open(&self.metadata_path)
             .await
             .map_err(|_| SoundboardError::SoundWrite)?;
+
         for sound in sounds.values() {
             file.write(
                 &bincode::serialize(&sound.metadata).map_err(|_| SoundboardError::SoundWrite)?,

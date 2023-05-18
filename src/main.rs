@@ -53,8 +53,8 @@ mod recorder;
 mod soundboard;
 mod wav;
 
-/// Max body size is 25MiB including other fields. We cut at 24MiB because calculating the rest of
-/// the body is too unreliable.
+/// Max body size is 25MiB including other fields. We cut at 24MiB because
+/// calculating the rest of the body is too unreliable.
 const MAX_FILE_SIZE: usize = 24 * (1 << 20);
 const ROWS_PER_MESSAGE: usize = 5;
 const SOUNDS_PER_ROW: usize = 5;
@@ -510,7 +510,7 @@ impl Handler {
             CommandDataOptionValue::String(s) => s.chars().next(),
             _ => None,
         });
-        let index = find_option(&command, "index", false).and_then(|opt| match opt {
+        let index = find_option(&command, "position", false).and_then(|opt| match opt {
             CommandDataOptionValue::Integer(n) => Some((*n - 1) as usize),
             _ => None,
         });
@@ -796,7 +796,7 @@ async fn register_global_commands(ctx: &Context) {
                     .create_sub_option(|option| {
                         option
                             .kind(CommandOptionType::Integer)
-                            .name("index")
+                            .name("position")
                             .description("The position of the sound in its group")
                             .required(false)
                     })
