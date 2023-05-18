@@ -2,7 +2,7 @@ use std::time::Duration;
 
 pub const HEADER_SIZE: usize = 44;
 
-const HEADERS_TEMPLATE: [&[u8]; 2] = [
+const HEADER_TEMPLATES: [&[u8]; 2] = [
     &[82, 73, 70, 70],
     &[
         87, 65, 86, 69, 102, 109, 116, 32, 16, 0, 0, 0, 1, 0, 1, 0, 128, 187, 0, 0, 0, 119, 1, 0,
@@ -12,9 +12,9 @@ const HEADERS_TEMPLATE: [&[u8]; 2] = [
 
 pub fn package(pcm: &[i16]) -> Vec<u8> {
     let mut data = Vec::with_capacity(HEADER_SIZE + pcm.len() * 2);
-    data.extend_from_slice(HEADERS_TEMPLATE[0]);
+    data.extend_from_slice(HEADER_TEMPLATES[0]);
     data.extend_from_slice(&((pcm.len() * 2 + HEADER_SIZE - 8) as u32).to_le_bytes()); // Total length without data up to this point
-    data.extend_from_slice(HEADERS_TEMPLATE[1]);
+    data.extend_from_slice(HEADER_TEMPLATES[1]);
     data.extend_from_slice(&(((pcm.len() * 2) as u32).to_le_bytes())); // PCM data length
     data.extend(pcm.iter().flat_map(|n| [*n as u8, (n >> 8) as u8]));
     data
@@ -27,12 +27,12 @@ pub fn remove_header(wav: &[u8]) -> &[u8] {
 }
 
 pub fn is_valid(data: &[u8]) -> bool {
-    if data.len() < HEADER_SIZE {
+    if data.len() < HEADER_SIZE || data.len() - HEADER_SIZE % 2 == 1 {
         return false;
     }
-    &data[0..4] == HEADERS_TEMPLATE[0]
+    &data[0..4] == HEADER_TEMPLATES[0]
         && data[4..8] == ((data.len() - 8) as u32).to_le_bytes()
-        && &data[8..40] == HEADERS_TEMPLATE[1]
+        && &data[8..40] == HEADER_TEMPLATES[1]
         && data[40..44] == ((data.len() - HEADER_SIZE) as u32).to_le_bytes()
 }
 
@@ -65,7 +65,7 @@ mod tests {
         // http://soundfile.sapp.org/doc/WaveFormat
         let mut data = Vec::with_capacity(HEADER_SIZE + pcm.len() * 2);
         data.extend_from_slice("RIFF".as_bytes());
-        data.extend_from_slice(&((pcm.len() * 2 + HEADER_SIZE - 8) as u32).to_le_bytes()); // Total length without data up to this point
+        data.extend_from_slice(&((pcm.len() * 2 + HEADER_SIZE - 8) as u32).to_le_bytes()); // Total length without the data up to this point
         data.extend_from_slice("WAVE".as_bytes());
         data.extend_from_slice("fmt ".as_bytes());
         data.extend_from_slice(&(16u32.to_le_bytes())); // Size of sub-chunk
