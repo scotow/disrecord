@@ -327,9 +327,14 @@ impl Soundboard {
                     .then_some(*id)
             })
             .ok_or(SoundboardError::SoundNotFound)?;
-        sounds.remove(&id);
 
-        self.overwrite_metadata_file(&sounds).await
+        if let Some(sound) = sounds.remove(&id) {
+            self.overwrite_metadata_file(&sounds).await?;
+            fs::remove_file(sound.metadata.get_file_path(&self.sounds_dir_path))
+                .await
+                .map_err(|_| SoundboardError::DeleteFailed)?;
+        }
+        Ok(())
     }
 
     async fn overwrite_metadata_file(
@@ -368,8 +373,8 @@ pub struct SoundMetadata {
 }
 
 impl SoundMetadata {
-    fn get_file_path(&self, fs: &Path) -> PathBuf {
-        let mut path = fs.join(self.id.to_string());
+    fn get_file_path(&self, dir_path: &Path) -> PathBuf {
+        let mut path = dir_path.join(self.id.to_string());
         path.set_extension("wav");
         path
     }
@@ -420,6 +425,8 @@ pub enum SoundboardError {
     SoundWrite,
     #[error("Cannot find that sound.")]
     SoundNotFound,
+    #[error("Failed to delete sound.")]
+    DeleteFailed,
 }
 
 fn match_regex(searching: &str) -> Regex {
