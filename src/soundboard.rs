@@ -116,6 +116,21 @@ impl Soundboard {
             .collect()
     }
 
+    pub async fn groups_matching(&self, guild: GuildId, group: &str, max: usize) -> Vec<String> {
+        let regex = search_regex(group);
+        self.sounds
+            .lock()
+            .await
+            .values()
+            .filter_map(|sound| {
+                (sound.metadata.guild == guild.0 && regex.is_match(&sound.metadata.group))
+                    .then(|| sound.metadata.group.clone())
+            })
+            .unique()
+            .take(max)
+            .collect()
+    }
+
     pub async fn get_wav(&self, id: Ulid) -> Option<Vec<u8>> {
         self.sounds
             .lock()

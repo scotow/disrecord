@@ -199,24 +199,29 @@ impl Handler {
             return
         };
 
-        match find_autocompleting(&autocomplete.data.options) {
-            Some(("sound", CommandDataOptionValue::String(value))) => {
-                let matching_sounds = self
-                    .soundboard
-                    .names_matching(guild, value, AUTOCOMPLETE_MAX_CHOICES)
-                    .await;
-                autocomplete
-                    .create_autocomplete_response(&ctx, |response| {
-                        for sound in matching_sounds {
-                            response.add_string_choice(&sound, &sound);
-                        }
-                        response
-                    })
+        let matches = match find_autocompleting(&autocomplete.data.options) {
+            Some(("sound", CommandDataOptionValue::String(search))) => {
+                self.soundboard
+                    .names_matching(guild, search, AUTOCOMPLETE_MAX_CHOICES)
                     .await
-                    .expect("Failed to send autocomplete response");
+            }
+            Some(("group", CommandDataOptionValue::String(search))) => {
+                self.soundboard
+                    .groups_matching(guild, search, AUTOCOMPLETE_MAX_CHOICES)
+                    .await
             }
             _ => return,
-        }
+        };
+
+        autocomplete
+            .create_autocomplete_response(&ctx, |response| {
+                for m in matches {
+                    response.add_string_choice(&m, &m);
+                }
+                response
+            })
+            .await
+            .expect("Failed to send autocomplete response");
     }
 
     async fn version(&self, ctx: Context, command: ApplicationCommandInteraction) {
@@ -819,6 +824,7 @@ async fn register_global_commands(ctx: &Context) {
                             .name("group")
                             .description("The group to add this sound to")
                             .required(true)
+                            .set_autocomplete(true)
                     })
                     .create_sub_option(|option| {
                         option
