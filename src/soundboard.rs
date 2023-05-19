@@ -7,6 +7,7 @@ use std::{
 
 use bincode::Options;
 use itertools::Itertools;
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serenity::model::{application::component::ButtonStyle, channel::Attachment, id::GuildId};
 use thiserror::Error as ThisError;
@@ -102,12 +103,13 @@ impl Soundboard {
     }
 
     pub async fn names_matching(&self, guild: GuildId, search: &str, max: usize) -> Vec<String> {
+        let regex = search_regex(search);
         self.sounds
             .lock()
             .await
             .values()
             .filter_map(|sound| {
-                (sound.metadata.guild == guild.0 && sound.metadata.name.contains(search))
+                (sound.metadata.guild == guild.0 && regex.is_match(&sound.metadata.name))
                     .then(|| sound.metadata.name.clone())
             })
             .take(max)
@@ -124,11 +126,12 @@ impl Soundboard {
     }
 
     pub async fn get_wav_by_name(&self, name: &str, guild: GuildId) -> Option<Vec<u8>> {
+        let regex = match_regex(name);
         self.sounds
             .lock()
             .await
             .values_mut()
-            .find(|sound| sound.metadata.guild == guild.0 && sound.metadata.name == name)?
+            .find(|sound| sound.metadata.guild == guild.0 && regex.is_match(&sound.metadata.name))?
             .get_wav_data(&self.sounds_dir_path)
             .await
     }
@@ -160,10 +163,11 @@ impl Soundboard {
             return Err(SoundboardError::InvalidSound);
         }
 
+        let regex = match_regex(&name);
         let mut sounds = self.sounds.lock().await;
         if sounds
             .values()
-            .any(|sound| sound.metadata.guild == guild.0 && sound.metadata.name == name)
+            .any(|sound| sound.metadata.guild == guild.0 && regex.is_match(&sound.metadata.name))
         {
             return Err(SoundboardError::NameTaken);
         }
@@ -243,11 +247,13 @@ impl Soundboard {
     }
 
     pub async fn delete(&self, guild: GuildId, name: &str) -> Result<(), SoundboardError> {
+        let regex = match_regex(name);
         let mut sounds = self.sounds.lock().await;
         let id = sounds
             .iter()
             .find_map(|(id, sound)| {
-                (sound.metadata.guild == guild.0 && sound.metadata.name == name).then_some(*id)
+                (sound.metadata.guild == guild.0 && regex.is_match(&sound.metadata.name))
+                    .then_some(*id)
             })
             .ok_or(SoundboardError::SoundNotFound)?;
         sounds.remove(&id);
@@ -341,4 +347,13 @@ pub enum SoundboardError {
     SoundWrite,
     #[error("Cannot find that sound.")]
     SoundNotFound,
+}
+
+fn match_regex(searching: &str) -> Regex {
+    Regex::new(&format!("(?i){}", regex::escape(searching))).expect("Failed to build match regex")
+}
+
+fn search_regex(searching: &str) -> Regex {
+    Regex::new(&format!("(?i).*{}.*", regex::escape(searching)))
+        .expect("Failed to build search regex")
 }

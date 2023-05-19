@@ -11,6 +11,7 @@ itertools = "0.10.5"
 log = "0.4.17"
 log-panics = "2.1.0"
 parse_duration = "2.1.1"
+regex = "1.8.1"
 serde = { version = "1.0.160", features = ["derive"] }
 serenity = { version = "0.11.5", default_features = false, features = ["builder", "cache", "client", "gateway", "http", "model", "utils", "rustls_backend", "voice"] }
 songbird = "0.3.1"
