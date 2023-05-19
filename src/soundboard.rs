@@ -1,5 +1,6 @@
 use std::{
     collections::HashMap,
+    ffi::OsStr,
     path::{Path, PathBuf},
     process::Stdio,
     sync::Arc,
@@ -16,7 +17,7 @@ use thiserror::Error as ThisError;
 use tokio::{fs, fs::OpenOptions, io::AsyncWriteExt, process::Command, sync::Mutex, time::sleep};
 use ulid::Ulid;
 
-use crate::{soundboard::SoundboardError::InvalidSound, wav};
+use crate::wav;
 
 #[derive(Debug)]
 pub struct Soundboard {
@@ -183,18 +184,19 @@ impl Soundboard {
             data
         } else {
             let filename = PathBuf::from(&attachment.filename);
-            let Some(extension) = filename.extension().and_then(|ext| ext.to_str()) else {
-                return Err(InvalidSound);
-            };
+            let extension = filename
+                .extension()
+                .and_then(OsStr::to_str)
+                .ok_or(SoundboardError::InvalidSound)?;
 
             let mut cmd = Command::new(&self.ffmpeg_path);
-            cmd.args(["-f", extension])
-                .args(["-i", "-"])
-                .args(["-c:a", "pcm_s16le"])
-                .args(["-f", "s16le"])
-                .args(["-ac", "1"])
-                .args(["-ar", "48000"])
-                .arg("-")
+            cmd.args(["-f", extension]) // Input file format.
+                .args(["-i", "-"]) // Read from stdin.
+                .args(["-c:a", "pcm_s16le"]) // Transcode to PCM i16 LE.
+                .args(["-f", "s16le"]) // Output to raw PCM.
+                .args(["-ac", "1"]) // Mono channel.
+                .args(["-ar", "48000"]) // 48kHz sample rate.
+                .arg("-") // Output to stdout.
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::null());
@@ -221,17 +223,11 @@ impl Soundboard {
                 return Err(SoundboardError::TranscodingFailed);
             }
 
-            let data = wav::package(
-                &out.stdout
+            wav::package(
+                out.stdout
                     .as_slice_of::<i16>()
                     .map_err(|_| SoundboardError::TranscodingFailed)?,
-            );
-
-            // This should never happen.
-            if !wav::is_valid(&data) {
-                return Err(SoundboardError::TranscodingFailed);
-            }
-            data
+            )
         };
 
         let regex = match_regex(&name);
@@ -328,13 +324,11 @@ impl Soundboard {
             })
             .ok_or(SoundboardError::SoundNotFound)?;
 
-        if let Some(sound) = sounds.remove(&id) {
-            self.overwrite_metadata_file(&sounds).await?;
-            fs::remove_file(sound.metadata.get_file_path(&self.sounds_dir_path))
-                .await
-                .map_err(|_| SoundboardError::DeleteFailed)?;
-        }
-        Ok(())
+        let sound = sounds.remove(&id).ok_or(SoundboardError::SoundNotFound)?;
+        self.overwrite_metadata_file(&sounds).await?;
+        fs::remove_file(sound.metadata.get_file_path(&self.sounds_dir_path))
+            .await
+            .map_err(|_| SoundboardError::DeleteFailed)
     }
 
     async fn overwrite_metadata_file(

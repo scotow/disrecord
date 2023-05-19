@@ -925,7 +925,7 @@ fn find_option<'a>(
     let options = if top_level {
         &command.data.options
     } else {
-        &&command.data.options.first()?.options
+        &command.data.options.first()?.options
     };
     options
         .iter()
@@ -934,7 +934,7 @@ fn find_option<'a>(
 }
 
 fn find_autocompleting(options: &[CommandDataOption]) -> Option<(&str, &CommandDataOptionValue)> {
-    options.into_iter().find_map(|option| {
+    options.iter().find_map(|option| {
         if option.focused {
             option.resolved.as_ref().map(|v| (option.name.as_str(), v))
         } else {
