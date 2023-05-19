@@ -1,20 +1,22 @@
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
+    process::Stdio,
     sync::Arc,
     time::{Duration, Instant},
 };
 
 use bincode::Options;
+use byte_slice_cast::AsSliceOf;
 use itertools::Itertools;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serenity::model::{application::component::ButtonStyle, channel::Attachment, id::GuildId};
 use thiserror::Error as ThisError;
-use tokio::{fs, fs::OpenOptions, io::AsyncWriteExt, sync::Mutex, time::sleep};
+use tokio::{fs, fs::OpenOptions, io::AsyncWriteExt, process::Command, sync::Mutex, time::sleep};
 use ulid::Ulid;
 
-use crate::wav;
+use crate::{soundboard::SoundboardError::InvalidSound, wav};
 
 #[derive(Debug)]
 pub struct Soundboard {
@@ -22,6 +24,7 @@ pub struct Soundboard {
     sounds_dir_path: PathBuf,
     max_duration: Duration,
     cache_duration: Duration,
+    ffmpeg_path: PathBuf,
     sounds: Mutex<HashMap<Ulid, Sound>>,
 }
 
@@ -31,6 +34,7 @@ impl Soundboard {
         sounds_dir_path: PathBuf,
         max_duration: Duration,
         cache_duration: Duration,
+        ffmpeg_path: PathBuf,
     ) -> Self {
         let sounds = fs::read(&metadata_path)
             .await
@@ -65,6 +69,7 @@ impl Soundboard {
             sounds_dir_path,
             max_duration,
             cache_duration,
+            ffmpeg_path,
             sounds: Mutex::new(sounds),
         }
     }
@@ -173,10 +178,61 @@ impl Soundboard {
             .await
             .map_err(|_| SoundboardError::SoundFetch)?;
 
-        // Verify sound format.
-        if !wav::is_valid(&data) {
-            return Err(SoundboardError::InvalidSound);
-        }
+        // Verify sound format and transcode with ffmpeg if needed.
+        let data = if wav::is_valid(&data) {
+            data
+        } else {
+            let filename = PathBuf::from(&attachment.filename);
+            let Some(extension) = filename.extension().and_then(|ext| ext.to_str()) else {
+                return Err(InvalidSound);
+            };
+
+            let mut cmd = Command::new(&self.ffmpeg_path);
+            cmd.args(["-f", extension])
+                .args(["-i", "-"])
+                .args(["-c:a", "pcm_s16le"])
+                .args(["-f", "s16le"])
+                .args(["-ac", "1"])
+                .args(["-ar", "48000"])
+                .arg("-")
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null());
+            let mut child = cmd
+                .spawn()
+                .map_err(|_| SoundboardError::TranscodingFailed)?;
+
+            let mut stdin = child
+                .stdin
+                .take()
+                .ok_or(SoundboardError::TranscodingFailed)?;
+            tokio::spawn(async move {
+                stdin
+                    .write_all(&data)
+                    .await
+                    .expect("Failed to write sound to ffmpeg");
+            });
+
+            let out = child
+                .wait_with_output()
+                .await
+                .map_err(|_| SoundboardError::TranscodingFailed)?;
+            if !out.status.success() || out.stdout.len() % 2 != 0 {
+                return Err(SoundboardError::TranscodingFailed);
+            }
+
+            let data = wav::package(
+                &out.stdout
+                    .as_slice_of::<i16>()
+                    .map_err(|_| SoundboardError::TranscodingFailed)?,
+            );
+
+            // This should never happen.
+            if !wav::is_valid(&data) {
+                return Err(SoundboardError::TranscodingFailed);
+            }
+            data
+        };
 
         let regex = match_regex(&name);
         let mut sounds = self.sounds.lock().await;
@@ -358,6 +414,8 @@ pub enum SoundboardError {
     SoundFetch,
     #[error("Sound file is not of the right format/encoding.")]
     InvalidSound,
+    #[error("Failed to transcode sound to supported format.")]
+    TranscodingFailed,
     #[error("Failed to save file.")]
     SoundWrite,
     #[error("Cannot find that sound.")]

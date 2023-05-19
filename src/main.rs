@@ -966,6 +966,7 @@ async fn main() -> ExitCode {
             options.sounds_dir_path,
             options.sound_max_duration,
             options.sound_cache_duration,
+            options.ffmpeg_path,
         )
         .await,
     );

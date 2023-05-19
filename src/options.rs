@@ -44,6 +44,8 @@ pub struct Options {
         default_value("3m")
     )]
     pub sound_cache_duration: Duration,
+    #[arg(short = 'f', long, default_value("ffmpeg"))]
+    pub ffmpeg_path: PathBuf,
 }
 
 impl Options {
