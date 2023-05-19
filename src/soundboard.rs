@@ -101,6 +101,19 @@ impl Soundboard {
             .collect()
     }
 
+    pub async fn names_matching(&self, guild: GuildId, search: &str, max: usize) -> Vec<String> {
+        self.sounds
+            .lock()
+            .await
+            .values()
+            .filter_map(|sound| {
+                (sound.metadata.guild == guild.0 && sound.metadata.name.contains(search))
+                    .then(|| sound.metadata.name.clone())
+            })
+            .take(max)
+            .collect()
+    }
+
     pub async fn get_wav(&self, id: Ulid) -> Option<Vec<u8>> {
         self.sounds
             .lock()

@@ -18,14 +18,15 @@ pub type Ssrc = u32;
 
 pub const FREQUENCY: usize = 48_000;
 
-// Log every voice data packet on debug and only one every minute on info level.
+// Log every voice data packet on debug and only one every five minutes on info
+// level.
 macro_rules! log_voice_data {
     ($st:tt, $($arg:tt)+) => {
         if log_enabled!(Level::Debug) {
             debug!($($arg)+);
         } else if log_enabled!(Level::Info) {
             $st.voice_data_received += 1;
-            if $st.voice_data_received % 3_000 == 0 { // ~ Once every one minute of voice data.
+            if $st.voice_data_received % 15_000 == 0 { // ~ Once every five minute of voice data.
                 info!($($arg)+);
             }
         }
@@ -198,7 +199,9 @@ impl Recorder {
                         debug!("cleaning users voice data that hasn't speak for a while");
                         let mut cleaned = 0;
                         for user_data in self.mapping.values_mut() {
-                            if user_data.last_insert.elapsed() > self.clean_timeout {
+                            if user_data.last_insert.elapsed() > self.clean_timeout
+                                && user_data.data.is_some()
+                            {
                                 user_data.data = None;
                                 cleaned += 1;
                             }

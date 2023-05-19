@@ -20,7 +20,10 @@ use serenity::{
             command::{Command, CommandOptionType, CommandType},
             component::ButtonStyle,
             interaction::{
-                application_command::{ApplicationCommandInteraction, CommandDataOptionValue},
+                application_command::{
+                    ApplicationCommandInteraction, CommandDataOption, CommandDataOptionValue,
+                },
+                autocomplete::AutocompleteInteraction,
                 message_component::MessageComponentInteraction,
                 Interaction, InteractionResponseType,
             },
@@ -58,6 +61,7 @@ mod wav;
 const MAX_FILE_SIZE: usize = 24 * (1 << 20);
 const ROWS_PER_MESSAGE: usize = 5;
 const SOUNDS_PER_ROW: usize = 5;
+const AUTOCOMPLETE_MAX_CHOICES: usize = 25;
 
 #[derive(Clone)]
 struct Handler {
@@ -89,6 +93,9 @@ impl EventHandler for Handler {
             Interaction::ApplicationCommand(command) => self.dispatch_command(ctx, command).await,
             Interaction::MessageComponent(component) => {
                 self.dispatch_component(ctx, component).await
+            }
+            Interaction::Autocomplete(autocomplete) => {
+                self.dispatch_autocomplete(ctx, autocomplete).await
             }
             _ => return,
         }
@@ -187,6 +194,31 @@ impl Handler {
         defer.expect("Failed to defer sound play");
     }
 
+    async fn dispatch_autocomplete(&self, ctx: Context, autocomplete: AutocompleteInteraction) {
+        let Some(guild) = autocomplete.guild_id else {
+            return
+        };
+
+        match find_autocompleting(&autocomplete.data.options) {
+            Some(("sound", CommandDataOptionValue::String(value))) => {
+                let matching_sounds = self
+                    .soundboard
+                    .names_matching(guild, value, AUTOCOMPLETE_MAX_CHOICES)
+                    .await;
+                autocomplete
+                    .create_autocomplete_response(&ctx, |response| {
+                        for sound in matching_sounds {
+                            response.add_string_choice(&sound, &sound);
+                        }
+                        response
+                    })
+                    .await
+                    .expect("Failed to send autocomplete response");
+            }
+            _ => return,
+        }
+    }
+
     async fn version(&self, ctx: Context, command: ApplicationCommandInteraction) {
         command
             .create_interaction_response(&ctx, |response| {
@@ -204,7 +236,7 @@ impl Handler {
                 response
                     .kind(InteractionResponseType::ChannelMessageWithSource)
                     .interaction_response_data(|message| {
-                        message.content("Use Audacity to load and cut parts of the recordings.")
+                        message.content("Use **Audacity** to load and cut parts of the recordings. Expected format is WAV, mono / 48kHZ / 16bit signed")
                     })
             })
             .await
@@ -324,7 +356,9 @@ impl Handler {
             .create_interaction_response(&ctx, |response| {
                 response
                     .kind(InteractionResponseType::ChannelMessageWithSource)
-                    .interaction_response_data(|message| message.content("Listening..."))
+                    .interaction_response_data(|message| {
+                        message.content("Listening and ready to play sounds...")
+                    })
             })
             .await
             .expect("Cannot send listen message");
@@ -772,12 +806,12 @@ async fn register_global_commands(ctx: &Context) {
                         option
                             .kind(CommandOptionType::String)
                             .name("color")
+                            .description("Color of the button")
+                            .required(true)
                             .add_string_choice("blue", "blue")
                             .add_string_choice("green", "green")
                             .add_string_choice("red", "red")
                             .add_string_choice("grey", "grey")
-                            .description("Color of the button")
-                            .required(true)
                     })
                     .create_sub_option(|option| {
                         option
@@ -799,6 +833,7 @@ async fn register_global_commands(ctx: &Context) {
                             .name("position")
                             .description("The position of the sound in its group")
                             .required(false)
+                            .min_int_value(1)
                     })
             });
 
@@ -814,6 +849,7 @@ async fn register_global_commands(ctx: &Context) {
                             .name("sound")
                             .description("Sound name to download")
                             .required(true)
+                            .set_autocomplete(true)
                     })
             });
 
@@ -829,6 +865,7 @@ async fn register_global_commands(ctx: &Context) {
                             .name("sound")
                             .description("Sound name to delete")
                             .required(true)
+                            .set_autocomplete(true)
                     })
             })
         })
@@ -880,6 +917,16 @@ fn find_option<'a>(
         .iter()
         .find(|opt| opt.name == name)
         .and_then(|opt| opt.resolved.as_ref())
+}
+
+fn find_autocompleting(options: &[CommandDataOption]) -> Option<(&str, &CommandDataOptionValue)> {
+    options.into_iter().find_map(|option| {
+        if option.focused {
+            option.resolved.as_ref().map(|v| (option.name.as_str(), v))
+        } else {
+            find_autocompleting(&option.options)
+        }
+    })
 }
 
 #[tokio::main]
