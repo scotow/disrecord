@@ -4,7 +4,8 @@ use clap::{ArgAction, Parser};
 use log::LevelFilter;
 use parse_duration::parse::Error as DurationError;
 
-#[derive(Parser)]
+#[derive(Parser, Debug)]
+#[command(version, about)]
 pub struct Options {
     #[arg(short = 'v', long = "verbose", action = ArgAction::Count)]
     log_level: u8,
