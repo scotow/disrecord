@@ -10,22 +10,37 @@ const HEADER_TEMPLATES: [&[u8]; 2] = [
     ],
 ];
 
+/// Package i16 LE PCM data into a WAV container.
 pub fn package(pcm: &[i16]) -> Vec<u8> {
     let mut data = Vec::with_capacity(HEADER_SIZE + pcm.len() * 2);
-    data.extend_from_slice(HEADER_TEMPLATES[0]);
-    data.extend_from_slice(&((pcm.len() * 2 + HEADER_SIZE - 8) as u32).to_le_bytes()); // Total length without data up to this point
-    data.extend_from_slice(HEADER_TEMPLATES[1]);
-    data.extend_from_slice(&(((pcm.len() * 2) as u32).to_le_bytes())); // PCM data length
-    data.extend(pcm.iter().flat_map(|n| [*n as u8, (n >> 8) as u8]));
+    write_header(&mut data, pcm.len() * 2);
+    data.extend(pcm.iter().flat_map(|n| n.to_le_bytes()));
     data
 }
 
-/// Remove the WAV header while keeping its payload unchanged (little endian).
-/// Panics if the slice is not long enough to have data.
-pub fn remove_header(wav: &[u8]) -> &[u8] {
-    &wav[HEADER_SIZE..]
+/// Package i16 LE PCM data into a WAV container by prepending the buffer with a header.
+pub fn package_mut_raw(data: &mut Vec<u8>) {
+    data.reserve_exact(HEADER_SIZE);
+    write_header(data, data.len());
+    data.rotate_right(HEADER_SIZE);
 }
 
+/// `pcm_len` being the number of bytes of the PCM payload.
+fn write_header(buffer: &mut Vec<u8>, pcm_len: usize) {
+    buffer.extend_from_slice(HEADER_TEMPLATES[0]);
+    buffer.extend_from_slice(&((pcm_len + HEADER_SIZE - 8) as u32).to_le_bytes()); // Total length without data up to this point
+    buffer.extend_from_slice(HEADER_TEMPLATES[1]);
+    buffer.extend_from_slice(&((pcm_len as u32).to_le_bytes())); // PCM data length
+}
+
+/// Remove the WAV header while keeping its payload unchanged (little endian).
+/// Panics if the vec is not long enough to have PCM data.
+pub fn remove_header(wav: &mut Vec<u8>) {
+    wav.rotate_left(HEADER_SIZE);
+    wav.truncate(wav.len() - HEADER_SIZE);
+}
+
+/// Validates that the data are a valid WAV containing PCM i16 LE data.
 pub fn is_valid(data: &[u8]) -> bool {
     if data.len() < HEADER_SIZE || data.len() - HEADER_SIZE % 2 == 1 {
         return false;
@@ -85,6 +100,28 @@ mod tests {
         assert_eq!(super::package(&pcm), data);
         assert!(super::is_valid(&data));
         assert!(super::is_valid(&super::package(&pcm)));
+    }
+
+    #[test]
+    fn package_mut_raw() {
+        let pcm = iter::repeat_with(|| random::<i16>()).take(2).collect_vec();
+        assert_eq!(super::package(&pcm), {
+            let mut data = pcm.iter().flat_map(|n| n.to_le_bytes()).collect();
+            super::package_mut_raw(&mut data);
+            data
+        });
+    }
+
+    #[test]
+    fn remove_header() {
+        let pcm = iter::repeat_with(|| random::<i16>())
+            .take(64 + random::<usize>() % 64)
+            .collect_vec();
+        let mut wav = super::package(&pcm);
+
+        let pcm = pcm.into_iter().flat_map(|n| n.to_le_bytes()).collect_vec();
+        super::remove_header(&mut wav);
+        assert_eq!(pcm, wav);
     }
 
     #[test]

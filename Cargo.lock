@@ -178,12 +178,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0d261e256854913907f67ed06efbc3338dfe6179796deefc1ff763fc1aee5535"
 
 [[package]]
-name = "byte-slice-cast"
-version = "1.2.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c3ac9f8b63eca6fd385229b3675f6cc0dc5c8a5c8a54a59d4f52ffd670d87b0c"
-
-[[package]]
 name = "bytemuck"
 version = "1.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -363,10 +357,9 @@ dependencies = [
 
 [[package]]
 name = "disrecord"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "bincode",
- "byte-slice-cast",
  "clap",
  "env_logger",
  "itertools",

@@ -8,7 +8,6 @@ use std::{
 };
 
 use bincode::Options;
-use byte_slice_cast::AsSliceOf;
 use itertools::Itertools;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -223,11 +222,9 @@ impl Soundboard {
                 return Err(SoundboardError::TranscodingFailed);
             }
 
-            wav::package(
-                out.stdout
-                    .as_slice_of::<i16>()
-                    .map_err(|_| SoundboardError::TranscodingFailed)?,
-            )
+            let mut data = out.stdout;
+            wav::package_mut_raw(&mut data);
+            data
         };
 
         let regex = match_regex(&name);

@@ -169,7 +169,7 @@ impl Handler {
         };
 
         let play_future = async {
-            let Some(wav) = self
+            let Some(mut data) = self
                 .soundboard
                 .get_wav(Ulid::from_string(&component.data.custom_id).expect("Invalid sound id"))
                 .await else {
@@ -182,9 +182,11 @@ impl Handler {
             let Some(call) = manager.get(guild) else {
                 return;
             };
+
+            wav::remove_header(&mut data);
             call.lock().await.play_source(Input::new(
                 false,
-                Reader::from_memory(wav::remove_header(&wav).to_vec()),
+                Reader::from_memory(data),
                 Codec::Pcm,
                 Container::Raw,
                 None,
