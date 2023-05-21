@@ -20,6 +20,7 @@
 - Supports groups, emojis, button color
 - Optional transcoding
 - Download sounds
+- Backups as ZIP
 
 ## Configuration
 

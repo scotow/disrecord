@@ -18,7 +18,8 @@ pub fn package(pcm: &[i16]) -> Vec<u8> {
     data
 }
 
-/// Package i16 LE PCM data into a WAV container by prepending the buffer with a header.
+/// Package i16 LE PCM data into a WAV container by prepending the buffer with a
+/// header.
 pub fn package_mut_raw(data: &mut Vec<u8>) {
     data.reserve_exact(HEADER_SIZE);
     write_header(data, data.len());

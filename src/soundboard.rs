@@ -11,6 +11,7 @@ use bincode::Options;
 use itertools::Itertools;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 use serenity::model::{application::component::ButtonStyle, channel::Attachment, id::GuildId};
 use thiserror::Error as ThisError;
 use tokio::{fs, fs::OpenOptions, io::AsyncWriteExt, process::Command, sync::Mutex, time::sleep};
@@ -141,7 +142,7 @@ impl Soundboard {
             .lock()
             .await
             .get_mut(&id)?
-            .get_wav_data(&self.sounds_dir_path)
+            .get_wav_data(&self.sounds_dir_path, true)
             .await
     }
 
@@ -152,7 +153,7 @@ impl Soundboard {
             .await
             .values_mut()
             .find(|sound| sound.metadata.guild == guild.0 && regex.is_match(&sound.metadata.name))?
-            .get_wav_data(&self.sounds_dir_path)
+            .get_wav_data(&self.sounds_dir_path, true)
             .await
     }
 
@@ -350,6 +351,67 @@ impl Soundboard {
 
         Ok(())
     }
+
+    pub async fn backup(
+        &self,
+        guild: GuildId,
+    ) -> Result<(String, Vec<(String, Vec<u8>)>), SoundboardError> {
+        let mut sounds = self.sounds.lock().await;
+
+        let metadata = sounds
+            .values()
+            .filter(|sound| sound.metadata.guild == guild.0)
+            .clone()
+            .into_group_map_by(|sound| &sound.metadata.group)
+            .into_iter()
+            .sorted_by(|(g1, _), (g2, _)| g1.cmp(g2))
+            .map(|(group, mut sounds)| {
+                sounds.sort_by(|s1, s2| {
+                    s1.metadata
+                        .index
+                        .cmp(&s2.metadata.index)
+                        .then_with(|| s1.metadata.name.cmp(&s2.metadata.name))
+                });
+                let sounds = sounds
+                    .into_iter()
+                    .map(|sound| {
+                        json!({
+                            "id": sound.metadata.id.to_string(),
+                            "name": sound.metadata.name,
+                            "emoji": sound.metadata.emoji,
+                            "color": match sound.metadata.color {
+                                ButtonStyle::Primary => "blue",
+                                ButtonStyle::Success => "green",
+                                ButtonStyle::Danger => "red",
+                                ButtonStyle::Secondary => "grey",
+                                _ => "blue",
+                            }
+                        })
+                    })
+                    .collect::<Value>();
+                json!({
+                    "group": group,
+                    "sounds": sounds,
+                })
+            })
+            .collect::<Value>();
+
+        let mut data = Vec::new();
+        for sound in sounds.values_mut() {
+            data.push((
+                format!("{}.wav", sound.metadata.id.to_string()),
+                sound
+                    .get_wav_data(&self.sounds_dir_path, false)
+                    .await
+                    .ok_or(SoundboardError::BackupFailed)?,
+            ));
+        }
+
+        Ok((
+            serde_json::to_string_pretty(&metadata).map_err(|_| SoundboardError::BackupFailed)?,
+            data,
+        ))
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -384,16 +446,20 @@ enum CachedSound {
 }
 
 impl Sound {
-    async fn get_wav_data(&mut self, dir_path: &Path) -> Option<Vec<u8>> {
+    async fn get_wav_data(&mut self, dir_path: &Path, cache: bool) -> Option<Vec<u8>> {
         match &mut self.data {
             CachedSound::Fs => {
                 let path = self.metadata.get_file_path(dir_path);
                 let data = fs::read(&path).await.ok()?;
-                self.data = CachedSound::Cached(data.clone(), Instant::now());
+                if cache {
+                    self.data = CachedSound::Cached(data.clone(), Instant::now());
+                }
                 Some(data)
             }
             CachedSound::Cached(data, fetched) => {
-                *fetched = Instant::now();
+                if cache {
+                    *fetched = Instant::now();
+                }
                 Some(data.clone())
             }
         }
@@ -418,6 +484,8 @@ pub enum SoundboardError {
     SoundNotFound,
     #[error("Failed to delete sound.")]
     DeleteFailed,
+    #[error("Failed to create backup.")]
+    BackupFailed,
 }
 
 fn match_regex(searching: &str) -> Regex {

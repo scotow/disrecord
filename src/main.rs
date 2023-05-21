@@ -2,6 +2,7 @@ use std::{
     borrow::Cow,
     collections::{hash_map::DefaultHasher, HashSet, VecDeque},
     hash::{Hash, Hasher},
+    io::{Cursor, Write},
     process::ExitCode,
     sync::{
         atomic::{AtomicU64, Ordering},
@@ -45,6 +46,7 @@ use songbird::{
 };
 use tokio::sync::{mpsc::UnboundedSender, oneshot};
 use ulid::Ulid;
+use zip::{write::FileOptions as ZipFileOptions, ZipWriter};
 
 use crate::{
     options::Options,
@@ -157,6 +159,7 @@ impl Handler {
                 Some("upload") => self.upload_sound(ctx, command).await,
                 Some("download") => self.download_sound(ctx, command).await,
                 Some("delete") => self.delete_sound(ctx, command).await,
+                Some("backup") => self.backup_sounds(ctx, command).await,
                 _ => (),
             },
             _ => (),
@@ -615,6 +618,48 @@ impl Handler {
         }
     }
 
+    async fn download_sound(&self, ctx: Context, command: ApplicationCommandInteraction) {
+        let Some(guild) = command.guild_id else {
+            return;
+        };
+        let Some(name) = find_option(&command, "sound", false).and_then(|opt| {
+            match opt {
+                CommandDataOptionValue::String(s) => Some(s),
+                _ => None,
+            }
+        }) else {
+            return;
+        };
+
+        match self.soundboard.get_wav_by_name(name, guild).await {
+            Some(data) => {
+                command.defer(&ctx).await.expect("Download defer failed");
+                // Does not support splitting.
+                command
+                    .create_followup_message(&ctx, |response| {
+                        response.add_file(AttachmentType::Bytes {
+                            data: Cow::from(data),
+                            filename: format!("{name}.wav"),
+                        })
+                    })
+                    .await
+                    .expect("Sound data transmission failure");
+            }
+            None => {
+                command
+                    .create_interaction_response(&ctx, |response| {
+                        response
+                            .kind(InteractionResponseType::ChannelMessageWithSource)
+                            .interaction_response_data(|message| {
+                                message.content("Sound not found.")
+                            })
+                    })
+                    .await
+                    .expect("Download response failure");
+            }
+        }
+    }
+
     async fn delete_sound(&self, ctx: Context, command: ApplicationCommandInteraction) {
         let Some(guild) = command.guild_id else {
             return;
@@ -642,44 +687,86 @@ impl Handler {
             .expect("Cannot send sound creation error message");
     }
 
-    async fn download_sound(&self, ctx: Context, command: ApplicationCommandInteraction) {
+    async fn backup_sounds(&self, ctx: Context, command: ApplicationCommandInteraction) {
         let Some(guild) = command.guild_id else {
             return;
         };
-        let Some(name) = find_option(&command, "sound", false).and_then(|opt| {
-            match opt {
-                CommandDataOptionValue::String(s) => Some(s),
-                _ => None,
-            }
-        }) else {
-            return;
-        };
 
-        match self.soundboard.get_wav_by_name(name, guild).await {
-            Some(data) => {
-                command.defer(&ctx).await.expect("Download defer failed");
-                // Does not support splitting.
-                command
-                    .create_followup_message(&ctx, |response| {
-                        response.add_file(AttachmentType::Bytes {
-                            data: Cow::from(data),
-                            filename: format!("{name}.wav"),
+        match self.soundboard.backup(guild).await {
+            Ok((metadata, sounds)) => {
+                if sounds.is_empty() {
+                    command
+                        .create_interaction_response(&ctx, |response| {
+                            response
+                                .kind(InteractionResponseType::ChannelMessageWithSource)
+                                .interaction_response_data(|message| {
+                                    message.content("There is no sounds on this server.")
+                                })
                         })
-                    })
-                    .await
-                    .expect("Voice data transmission failure");
+                        .await
+                        .expect("Backup response failure");
+                    return;
+                }
+                command.defer(&ctx).await.expect("Download defer failed");
+
+                let mut sound_index = 0;
+                let mut too_large = 0;
+                while sound_index < sounds.len() {
+                    let mut written = 0;
+
+                    // Write metadata in every archive.
+                    let mut archive = ZipWriter::new(Cursor::new(Vec::new()));
+                    written += metadata.len();
+                    archive
+                        .start_file("sounds.json", ZipFileOptions::default())
+                        .expect("Failed to create backup archive");
+                    archive
+                        .write_all(metadata.as_bytes())
+                        .expect("Failed to create backup archive");
+
+                    while written < MAX_FILE_SIZE && sound_index < sounds.len() {
+                        let (id, data) = &sounds[sound_index];
+                        if data.len() > MAX_FILE_SIZE {
+                            too_large += 1;
+                        } else {
+                            written += data.len();
+                            archive
+                                .start_file(id, ZipFileOptions::default())
+                                .expect("Failed to create backup archive");
+                            archive
+                                .write_all(&data)
+                                .expect("Failed to create backup archive");
+                        }
+                        sound_index += 1;
+                    }
+
+                    let archive = archive
+                        .finish()
+                        .expect("Failed to create backup archive")
+                        .into_inner();
+                    command
+                        .create_followup_message(&ctx, |response| {
+                            if too_large > 0 {
+                                response.content("{too_large} files were too large and weren't included in the backup.");
+                            }
+                            response.add_file(AttachmentType::Bytes {
+                                data: Cow::from(archive),
+                                filename: format!("backup.zip"),
+                            })
+                        })
+                        .await
+                        .expect("Backup response failure");
+                }
             }
-            None => {
+            Err(err) => {
                 command
                     .create_interaction_response(&ctx, |response| {
                         response
                             .kind(InteractionResponseType::ChannelMessageWithSource)
-                            .interaction_response_data(|message| {
-                                message.content("Sound not found.")
-                            })
+                            .interaction_response_data(|message| message.content(err.to_string()))
                     })
                     .await
-                    .expect("Download response failure");
+                    .expect("Backup response failure");
             }
         }
     }
@@ -883,6 +970,14 @@ async fn register_global_commands(ctx: &Context) {
                             .required(true)
                             .set_autocomplete(true)
                     })
+            });
+
+            // Backup.
+            command.create_option(|subcommand| {
+                subcommand
+                    .kind(CommandOptionType::SubCommand)
+                    .name("backup")
+                    .description("Download all sounds and metadata as a zip archive")
             })
         })
     })
