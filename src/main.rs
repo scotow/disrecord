@@ -1,7 +1,6 @@
 use std::{
     borrow::Cow,
-    collections::{hash_map::DefaultHasher, HashSet, VecDeque},
-    hash::{Hash, Hasher},
+    collections::{HashSet, VecDeque},
     io::{Cursor, Write},
     process::ExitCode,
     sync::{
@@ -54,6 +53,7 @@ use crate::{
     soundboard::Soundboard,
 };
 
+mod button;
 mod options;
 mod recorder;
 mod soundboard;
@@ -543,25 +543,10 @@ impl Handler {
         });
         let color = find_option(&command, "color", false)
             .and_then(|opt| match opt {
-                CommandDataOptionValue::String(s) => Some(match s.as_str() {
-                    "blue" => ButtonStyle::Primary,
-                    "green" => ButtonStyle::Success,
-                    "red" => ButtonStyle::Danger,
-                    "grey" => ButtonStyle::Secondary,
-                    _ => ButtonStyle::Primary,
-                }),
+                CommandDataOptionValue::String(s) => Some(button::parse_color(s)),
                 _ => None,
             })
-            .unwrap_or_else(|| {
-                let mut hasher = DefaultHasher::new();
-                name.to_lowercase().hash(&mut hasher);
-                [
-                    ButtonStyle::Primary,
-                    ButtonStyle::Success,
-                    ButtonStyle::Danger,
-                    ButtonStyle::Secondary,
-                ][hasher.finish() as usize % 4]
-            });
+            .unwrap_or_else(|| button::determinist(&name.to_lowercase()));
         let index = find_option(&command, "position", false).and_then(|opt| match opt {
             CommandDataOptionValue::Integer(n) => Some((*n - 1) as usize),
             _ => None,
@@ -925,10 +910,10 @@ async fn register_global_commands(ctx: &Context) {
                             .name("color")
                             .description("Color of the button")
                             .required(false)
-                            .add_string_choice("blue", "blue")
-                            .add_string_choice("green", "green")
-                            .add_string_choice("red", "red")
-                            .add_string_choice("grey", "grey")
+                            .add_string_choice("blue", button::as_str(ButtonStyle::Primary))
+                            .add_string_choice("green", button::as_str(ButtonStyle::Success))
+                            .add_string_choice("red", button::as_str(ButtonStyle::Danger))
+                            .add_string_choice("grey", button::as_str(ButtonStyle::Secondary))
                     })
                     .create_sub_option(|option| {
                         option

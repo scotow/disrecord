@@ -17,7 +17,7 @@ use thiserror::Error as ThisError;
 use tokio::{fs, fs::OpenOptions, io::AsyncWriteExt, process::Command, sync::Mutex, time::sleep};
 use ulid::Ulid;
 
-use crate::wav;
+use crate::{button, wav};
 
 #[derive(Debug)]
 pub struct Soundboard {
@@ -379,13 +379,7 @@ impl Soundboard {
                             "id": sound.metadata.id.to_string(),
                             "name": sound.metadata.name,
                             "emoji": sound.metadata.emoji,
-                            "color": match sound.metadata.color {
-                                ButtonStyle::Primary => "blue",
-                                ButtonStyle::Success => "green",
-                                ButtonStyle::Danger => "red",
-                                ButtonStyle::Secondary => "grey",
-                                _ => "blue",
-                            }
+                            "color": button::as_str(sound.metadata.color),
                         })
                     })
                     .collect::<Value>();
