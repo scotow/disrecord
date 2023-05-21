@@ -47,6 +47,8 @@ pub struct Options {
     pub sound_cache_duration: Duration,
     #[arg(short = 'f', long, default_value("ffmpeg"))]
     pub ffmpeg_path: PathBuf,
+    #[arg(short = 'r', long)]
+    pub disable_delete: bool,
 }
 
 impl Options {

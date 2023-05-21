@@ -40,6 +40,7 @@ Options:
   -D, --sound-max-duration <SOUND_MAX_DURATION>              [default: 15s]
   -c, --sound-cache-duration <SOUND_CACHE_DURATION>          [default: 3m]
   -f, --ffmpeg-path <FFMPEG_PATH>                            [default: ffmpeg]
+  -r, --disable-delete
   -h, --help                                                 Print help
   -V, --version                                              Print version
 ```
