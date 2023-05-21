@@ -357,11 +357,12 @@ dependencies = [
 
 [[package]]
 name = "disrecord"
-version = "0.2.6"
+version = "0.2.7"
 dependencies = [
  "bincode",
  "clap",
  "env_logger",
+ "futures",
  "itertools",
  "log",
  "log-panics",

@@ -11,6 +11,7 @@ use std::{
 
 use clap::Parser;
 use env_logger::Builder;
+use futures::{future, future::FutureExt};
 use itertools::Itertools;
 use log::{error, info};
 use serenity::{
@@ -48,12 +49,14 @@ use ulid::Ulid;
 use zip::{write::FileOptions as ZipFileOptions, ZipWriter};
 
 use crate::{
+    history::History,
     options::Options,
     recorder::{Action, Recorder},
     soundboard::Soundboard,
 };
 
 mod button;
+mod history;
 mod options;
 mod recorder;
 mod soundboard;
@@ -69,9 +72,10 @@ const AUTOCOMPLETE_MAX_CHOICES: usize = 25;
 #[derive(Clone)]
 struct Handler {
     bot_id: Arc<AtomicU64>,
+    allow_delete: bool,
     recorder_actions_tx: UnboundedSender<Action>,
     soundboard: Arc<Soundboard>,
-    allow_delete: bool,
+    history: Arc<History>,
 }
 
 #[async_trait]
@@ -169,7 +173,7 @@ impl Handler {
 
     async fn dispatch_component(&self, ctx: Context, component: MessageComponentInteraction) {
         let Some(guild) = component.guild_id else {
-            return
+            return;
         };
 
         let play_future = async {
@@ -199,6 +203,27 @@ impl Handler {
 
         let (defer, _play) = tokio::join!(component.defer(&ctx), play_future);
         defer.expect("Failed to defer sound play");
+
+        if let Some(history) = self
+            .history
+            .register(component.channel_id, component.user.id)
+            .await
+        {
+            let topic = future::join_all(history.into_iter().map(|(user, n)| {
+                user.to_user_cached(&ctx)
+                    .map(move |u| u.map(|u| format!("{}: {}", u.name, n)))
+            }))
+            .await
+            .into_iter()
+            .flatten()
+            .join(", ");
+
+            component
+                .channel_id
+                .edit(&ctx, |edit| edit.topic(topic))
+                .await
+                .expect("Failed to update channel topic");
+        }
     }
 
     async fn dispatch_autocomplete(&self, ctx: Context, autocomplete: AutocompleteInteraction) {
@@ -1064,9 +1089,10 @@ async fn main() -> ExitCode {
     let mut client = Client::builder(options.discord_token, intents)
         .event_handler(Handler {
             bot_id: Arc::new(AtomicU64::new(0)),
+            allow_delete: !options.disable_delete,
             recorder_actions_tx: tx,
             soundboard,
-            allow_delete: !options.disable_delete,
+            history: Arc::new(History::default()),
         })
         .register_songbird_from_config(songbird::Config::default().decode_mode(DecodeMode::Decode))
         .await

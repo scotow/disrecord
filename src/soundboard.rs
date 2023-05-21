@@ -101,8 +101,7 @@ impl Soundboard {
             .sorted_by(|(g1, _), (g2, _)| g1.cmp(g2))
             .map(|(g, s)| {
                 let mut sounds = s.into_iter().map(|s| s.metadata.clone()).collect_vec();
-                sounds
-                    .sort_by(|s1, s2| s1.index.cmp(&s2.index).then_with(|| s1.name.cmp(&s2.name)));
+                sounds.sort_by_key(|sound| sound.index);
                 (g.clone(), sounds)
             })
             .collect()
@@ -366,12 +365,7 @@ impl Soundboard {
             .into_iter()
             .sorted_by(|(g1, _), (g2, _)| g1.cmp(g2))
             .map(|(group, mut sounds)| {
-                sounds.sort_by(|s1, s2| {
-                    s1.metadata
-                        .index
-                        .cmp(&s2.metadata.index)
-                        .then_with(|| s1.metadata.name.cmp(&s2.metadata.name))
-                });
+                sounds.sort_by_key(|s| s.metadata.index);
                 let sounds = sounds
                     .into_iter()
                     .map(|sound| {
