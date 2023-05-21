@@ -734,7 +734,7 @@ impl Handler {
                                 .start_file(id, ZipFileOptions::default())
                                 .expect("Failed to create backup archive");
                             archive
-                                .write_all(&data)
+                                .write_all(data)
                                 .expect("Failed to create backup archive");
                         }
                         sound_index += 1;
@@ -751,7 +751,7 @@ impl Handler {
                             }
                             response.add_file(AttachmentType::Bytes {
                                 data: Cow::from(archive),
-                                filename: format!("backup.zip"),
+                                filename: "backup.zip".to_owned(),
                             })
                         })
                         .await
