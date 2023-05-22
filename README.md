@@ -21,6 +21,7 @@
 - Optional transcoding
 - Download sounds
 - Backups as ZIP
+- Basic usage logs
 
 ## Configuration
 
