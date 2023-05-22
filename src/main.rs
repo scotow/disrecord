@@ -165,6 +165,7 @@ impl Handler {
                 Some("download") => self.download_sound(ctx, command).await,
                 Some("delete") => self.delete_sound(ctx, command).await,
                 Some("backup") => self.backup_sounds(ctx, command).await,
+                Some("logs") => self.soundboard_log(ctx, command).await,
                 _ => (),
             },
             _ => (),
@@ -181,14 +182,14 @@ impl Handler {
                 .soundboard
                 .get_wav(Ulid::from_string(&component.data.custom_id).expect("Invalid sound id"))
                 .await else {
-                return;
+                return false;
             };
 
             let manager = songbird::get(&ctx)
                 .await
                 .expect("Failed to get songbird manager");
             let Some(call) = manager.get(guild) else {
-                return;
+                return false;
             };
 
             wav::remove_header(&mut data);
@@ -199,10 +200,15 @@ impl Handler {
                 Container::Raw,
                 None,
             ));
+
+            true
         };
 
-        let (defer, _play) = tokio::join!(component.defer(&ctx), play_future);
+        let (defer, played) = tokio::join!(component.defer(&ctx), play_future);
         defer.expect("Failed to defer sound play");
+        if !played {
+            return;
+        }
 
         if let Some(history) = self
             .history
@@ -394,7 +400,7 @@ impl Handler {
                 response
                     .kind(InteractionResponseType::ChannelMessageWithSource)
                     .interaction_response_data(|message| {
-                        message.content("Listening and ready to play sounds...")
+                        message.content("Listening and ready to play sounds.")
                     })
             })
             .await
@@ -785,6 +791,69 @@ impl Handler {
         }
     }
 
+    async fn soundboard_log(&self, ctx: Context, command: ApplicationCommandInteraction) {
+        let duration = find_option(&command, "duration", false)
+            .and_then(|opt| match opt {
+                CommandDataOptionValue::String(s) => Some(s).map(|s| s.as_str()),
+                _ => None,
+            })
+            .unwrap_or("30s");
+
+        let duration = match humantime::parse_duration(duration) {
+            Ok(duration) => duration,
+            Err(_err) => {
+                command
+                    .create_interaction_response(&ctx, |response| {
+                        response
+                            .kind(InteractionResponseType::ChannelMessageWithSource)
+                            .interaction_response_data(|message| {
+                                message.content("Invalid duration.")
+                            })
+                    })
+                    .await
+                    .expect("Logs response failure");
+                return;
+            }
+        };
+
+        match self.history.get_logs(command.channel_id, duration).await {
+            Some((resolved_duration, logs)) if !logs.is_empty() => {
+                let list = future::join_all(logs.into_iter().map(|(user, n)| {
+                    user.to_user_cached(&ctx)
+                        .map(move |u| u.map(|u| format!("• {}: {}", u.name, n)))
+                }))
+                .await
+                .into_iter()
+                .flatten()
+                .join("\n");
+                command
+                    .create_interaction_response(&ctx, |response| {
+                        response
+                            .kind(InteractionResponseType::ChannelMessageWithSource)
+                            .interaction_response_data(|message| {
+                                message.content(format!(
+                                    "Soundboard usage for the last {}:\n{}",
+                                    humantime::format_duration(resolved_duration),
+                                    list
+                                ))
+                            })
+                    })
+                    .await
+                    .expect("Logs response failure");
+            }
+            _ => {
+                command
+                    .create_interaction_response(&ctx, |response| {
+                        response
+                            .kind(InteractionResponseType::ChannelMessageWithSource)
+                            .interaction_response_data(|message| message.content("No logs founds."))
+                    })
+                    .await
+                    .expect("Logs response failure");
+            }
+        }
+    }
+
     async fn disconnect_if_alone(&self, ctx: &Context, channel: ChannelId) {
         let Some(channel) = ctx.cache.guild_channel(channel) else {
             return;
@@ -993,6 +1062,21 @@ impl Handler {
                         .kind(CommandOptionType::SubCommand)
                         .name("backup")
                         .description("Download all sounds and metadata as a zip archive")
+                });
+
+                // Logs.
+                command.create_option(|subcommand| {
+                    subcommand
+                        .kind(CommandOptionType::SubCommand)
+                        .name("logs")
+                        .description("Get latest usage of the soundboard in this channel")
+                        .create_sub_option(|option| {
+                            option
+                                .kind(CommandOptionType::String)
+                                .name("duration")
+                                .description("Logs aggregation duration")
+                                .required(false)
+                        })
                 })
             })
         })
