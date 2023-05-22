@@ -698,7 +698,7 @@ impl Handler {
                     .interaction_response_data(|message| message.content(text))
             })
             .await
-            .expect("Cannot send sound creation error message");
+            .expect("Cannot send sound deletion error message");
     }
 
     async fn backup_sounds(&self, ctx: Context, command: ApplicationCommandInteraction) {
