@@ -111,7 +111,6 @@ impl ChannelHistory {
             .into_iter()
             .sorted_by(|(_u1, c1), (_u2, c2)| c1.cmp(c2).reverse())
             .map(|(user, count)| (user, count as u32))
-            .rev()
             .collect()
     }
 }
