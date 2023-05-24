@@ -244,6 +244,7 @@ impl Handler {
                     .await
             }
             Some(("group", CommandDataOptionValue::String(search))) => {
+                dbg!(&search);
                 self.soundboard
                     .groups_matching(guild, search, AUTOCOMPLETE_MAX_CHOICES)
                     .await
@@ -647,11 +648,15 @@ impl Handler {
         }) else {
             return;
         };
+        let group = find_option(&command, "group", false).and_then(|opt| match opt {
+            CommandDataOptionValue::String(s) => Some(s.as_str()),
+            _ => None,
+        });
 
-        match self.soundboard.get_wav_by_name(name, guild).await {
-            Some(data) => {
+        // Does not support splitting.
+        match self.soundboard.get_wav_by_name(guild, name, group).await {
+            Ok(data) if data.len() <= MAX_FILE_SIZE => {
                 command.defer(&ctx).await.expect("Download defer failed");
-                // Does not support splitting.
                 command
                     .create_followup_message(&ctx, |response| {
                         response.add_file(AttachmentType::Bytes {
@@ -662,14 +667,24 @@ impl Handler {
                     .await
                     .expect("Sound data transmission failure");
             }
-            None => {
+            Ok(_) => {
                 command
                     .create_interaction_response(&ctx, |response| {
                         response
                             .kind(InteractionResponseType::ChannelMessageWithSource)
                             .interaction_response_data(|message| {
-                                message.content("Sound not found.")
+                                message.content("Sound too large.")
                             })
+                    })
+                    .await
+                    .expect("Download response failure");
+            }
+            Err(err) => {
+                command
+                    .create_interaction_response(&ctx, |response| {
+                        response
+                            .kind(InteractionResponseType::ChannelMessageWithSource)
+                            .interaction_response_data(|message| message.content(err.to_string()))
                     })
                     .await
                     .expect("Download response failure");
@@ -692,8 +707,12 @@ impl Handler {
         }) else {
             return;
         };
+        let group = find_option(&command, "group", false).and_then(|opt| match opt {
+            CommandDataOptionValue::String(s) => Some(s.as_str()),
+            _ => None,
+        });
 
-        let text = match self.soundboard.delete(guild, name).await {
+        let text = match self.soundboard.delete(guild, name, group).await {
             Ok(()) => "Deleted. *(for ever)*".to_owned(),
             Err(err) => err.to_string(),
         };
@@ -1036,6 +1055,14 @@ impl Handler {
                                 .required(true)
                                 .set_autocomplete(true)
                         })
+                        .create_sub_option(|option| {
+                            option
+                                .kind(CommandOptionType::String)
+                                .name("group")
+                                .description("Group name of the sound to delete")
+                                .required(false)
+                                .set_autocomplete(true)
+                        })
                 });
 
                 // Delete.
@@ -1051,6 +1078,14 @@ impl Handler {
                                     .name("sound")
                                     .description("Sound name to delete")
                                     .required(true)
+                                    .set_autocomplete(true)
+                            })
+                            .create_sub_option(|option| {
+                                option
+                                    .kind(CommandOptionType::String)
+                                    .name("group")
+                                    .description("Group name of the sound to delete")
+                                    .required(false)
                                     .set_autocomplete(true)
                             })
                     });

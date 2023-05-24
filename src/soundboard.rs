@@ -117,6 +117,8 @@ impl Soundboard {
                 (sound.metadata.guild == guild.0 && regex.is_match(&sound.metadata.name))
                     .then(|| sound.metadata.name.clone())
             })
+            .unique()
+            .sorted()
             .take(max)
             .collect()
     }
@@ -132,6 +134,7 @@ impl Soundboard {
                     .then(|| sound.metadata.group.clone())
             })
             .unique()
+            .sorted()
             .take(max)
             .collect()
     }
@@ -145,15 +148,33 @@ impl Soundboard {
             .await
     }
 
-    pub async fn get_wav_by_name(&self, name: &str, guild: GuildId) -> Option<Vec<u8>> {
-        let regex = match_regex(name);
-        self.sounds
-            .lock()
-            .await
-            .values_mut()
-            .find(|sound| sound.metadata.guild == guild.0 && regex.is_match(&sound.metadata.name))?
+    pub async fn get_wav_by_name(
+        &self,
+        guild: GuildId,
+        name: &str,
+        group: Option<&str>,
+    ) -> Result<Vec<u8>, SoundboardError> {
+        let name_regex = match_regex(name);
+        let group_regex = group.map(|g| match_regex(g));
+
+        let mut sounds = self.sounds.lock().await;
+        let mut matching = sounds.values_mut().filter(|sound| {
+            sound.metadata.guild == guild.0
+                && name_regex.is_match(&sound.metadata.name)
+                && group_regex
+                    .as_ref()
+                    .map(|rg| rg.is_match(&sound.metadata.group))
+                    .unwrap_or(true)
+        });
+        let sound = matching.next().ok_or(SoundboardError::SoundNotFound)?;
+        if matching.next().is_some() {
+            return Err(SoundboardError::SoundNameAmbiguous);
+        }
+
+        sound
             .get_wav_data(&self.sounds_dir_path, true)
             .await
+            .ok_or(SoundboardError::SoundNotFound)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -164,7 +185,7 @@ impl Soundboard {
         name: String,
         emoji: Option<char>,
         color: ButtonStyle,
-        group: String,
+        mut group: String,
         requested_index: Option<usize>,
     ) -> Result<Ulid, SoundboardError> {
         // Verify duration.
@@ -227,12 +248,26 @@ impl Soundboard {
             data
         };
 
-        let regex = match_regex(&name);
         let mut sounds = self.sounds.lock().await;
-        if sounds
+
+        // Find similar existing group.
+        let group_regex = match_regex(&group);
+        group = sounds
             .values()
-            .any(|sound| sound.metadata.guild == guild.0 && regex.is_match(&sound.metadata.name))
-        {
+            .find_map(|sound| {
+                group_regex
+                    .is_match(&sound.metadata.group)
+                    .then(|| sound.metadata.group.clone())
+            })
+            .unwrap_or(group);
+
+        // Check if name is already taken in this group.
+        let name_regex = match_regex(&name);
+        if sounds.values().any(|sound| {
+            sound.metadata.guild == guild.0
+                && name_regex.is_match(&sound.metadata.name)
+                && sound.metadata.group == group
+        }) {
             return Err(SoundboardError::NameTaken);
         }
 
@@ -310,16 +345,29 @@ impl Soundboard {
         Ok(id)
     }
 
-    pub async fn delete(&self, guild: GuildId, name: &str) -> Result<(), SoundboardError> {
-        let regex = match_regex(name);
+    pub async fn delete(
+        &self,
+        guild: GuildId,
+        name: &str,
+        group: Option<&str>,
+    ) -> Result<(), SoundboardError> {
+        let name_regex = match_regex(name);
+        let group_regex = group.map(|g| match_regex(g));
+
         let mut sounds = self.sounds.lock().await;
-        let id = sounds
-            .iter()
-            .find_map(|(id, sound)| {
-                (sound.metadata.guild == guild.0 && regex.is_match(&sound.metadata.name))
-                    .then_some(*id)
-            })
-            .ok_or(SoundboardError::SoundNotFound)?;
+        let mut matching = sounds.iter().filter_map(|(id, sound)| {
+            (sound.metadata.guild == guild.0
+                && name_regex.is_match(&sound.metadata.name)
+                && group_regex
+                    .as_ref()
+                    .map(|rg| rg.is_match(&sound.metadata.group))
+                    .unwrap_or(true))
+            .then_some(*id)
+        });
+        let id = matching.next().ok_or(SoundboardError::SoundNotFound)?;
+        if matching.next().is_some() {
+            return Err(SoundboardError::SoundNameAmbiguous);
+        }
 
         let sound = sounds.remove(&id).ok_or(SoundboardError::SoundNotFound)?;
         self.overwrite_metadata_file(&sounds).await?;
@@ -456,7 +504,7 @@ impl Sound {
 
 #[derive(ThisError, Debug)]
 pub enum SoundboardError {
-    #[error("A sound with the same name already exists.")]
+    #[error("A sound with the same name in this group already exists.")]
     NameTaken,
     #[error("Sound too long.")]
     TooLong,
@@ -470,6 +518,8 @@ pub enum SoundboardError {
     SoundWrite,
     #[error("Cannot find that sound.")]
     SoundNotFound,
+    #[error("Sound name is ambiguous. Try to add a group too.")]
+    SoundNameAmbiguous,
     #[error("Failed to delete sound.")]
     DeleteFailed,
     #[error("Failed to create backup.")]
@@ -477,10 +527,9 @@ pub enum SoundboardError {
 }
 
 fn match_regex(searching: &str) -> Regex {
-    Regex::new(&format!("(?i){}", regex::escape(searching))).expect("Failed to build match regex")
+    Regex::new(&format!("(?i)^{}$", regex::escape(searching))).expect("Failed to build match regex")
 }
 
 fn search_regex(searching: &str) -> Regex {
-    Regex::new(&format!("(?i).*{}.*", regex::escape(searching)))
-        .expect("Failed to build search regex")
+    Regex::new(&format!("(?i){}", regex::escape(searching))).expect("Failed to build search regex")
 }
