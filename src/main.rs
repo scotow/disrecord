@@ -191,9 +191,13 @@ impl Handler {
             let Some(call) = manager.get(guild) else {
                 return false;
             };
+            let mut call_guard = call.lock().await;
+            if call_guard.current_channel().is_none() {
+                return false;
+            }
 
             wav::remove_header(&mut data);
-            call.lock().await.play_source(Input::new(
+            call_guard.play_source(Input::new(
                 false,
                 Reader::from_memory(data),
                 Codec::Pcm,
