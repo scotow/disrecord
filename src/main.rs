@@ -14,6 +14,7 @@ use env_logger::Builder;
 use futures::{future, future::FutureExt};
 use itertools::Itertools;
 use log::{error, info};
+use regex::Regex;
 use serenity::{
     async_trait,
     client::{Context, EventHandler},
@@ -248,7 +249,6 @@ impl Handler {
                     .await
             }
             Some(("group", CommandDataOptionValue::String(search))) => {
-                dbg!(&search);
                 self.soundboard
                     .groups_matching(guild, search, AUTOCOMPLETE_MAX_CHOICES)
                     .await
@@ -575,7 +575,16 @@ impl Handler {
             return;
         };
         let emoji = find_option(&command, "emoji", false).and_then(|opt| match opt {
-            CommandDataOptionValue::String(s) => s.chars().next(),
+            CommandDataOptionValue::String(s) => {
+                if Regex::new(r#"^\p{Emoji}$"#)
+                    .expect("invalid regex emoji")
+                    .is_match(s)
+                {
+                    s.chars().next()
+                } else {
+                    None
+                }
+            }
             _ => None,
         });
         let color = find_option(&command, "color", false)
