@@ -497,29 +497,17 @@ impl Handler {
             .await
             .expect("Failed to delete original sound list interaction");
         for (group, sounds) in sounds {
-            // Send the group name once then at most 4 sound rows per message.
-            for (message_index, sounds_message) in sounds
-                .chunks((ROWS_PER_MESSAGE - 1) * SOUNDS_PER_ROW)
-                .enumerate()
+            // Send the group name once then at most 5 sound rows per message.
+            for (message_index, sounds_message) in
+                sounds.chunks(ROWS_PER_MESSAGE * SOUNDS_PER_ROW).enumerate()
             {
                 command
                     .channel_id
                     .send_message(&ctx, |message| {
+                        if message_index == 0 {
+                            message.content(format!("# {group}"));
+                        }
                         message.components(|components| {
-                            if message_index == 0 {
-                                components.create_action_row(|row| {
-                                    row.create_select_menu(|menu| {
-                                        menu.custom_id("group").options(|menu_options| {
-                                            menu_options.create_option(|option| {
-                                                option
-                                                    .label(&group)
-                                                    .value(&group)
-                                                    .default_selection(true)
-                                            })
-                                        })
-                                    })
-                                });
-                            }
                             for sounds_row in sounds_message.chunks(SOUNDS_PER_ROW) {
                                 components.create_action_row(|row| {
                                     for sound in sounds_row {
@@ -852,7 +840,7 @@ impl Handler {
             Some((resolved_duration, logs)) if !logs.is_empty() => {
                 let list = future::join_all(logs.into_iter().map(|(user, n)| {
                     user.to_user_cached(&ctx)
-                        .map(move |u| u.map(|u| format!("• {}: {}", u.name, n)))
+                        .map(move |u| u.map(|u| format!("1. {}: {}", u.name, n)))
                 }))
                 .await
                 .into_iter()
