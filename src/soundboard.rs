@@ -155,7 +155,7 @@ impl Soundboard {
         group: Option<&str>,
     ) -> Result<Vec<u8>, SoundboardError> {
         let name_regex = match_regex(name);
-        let group_regex = group.map(|g| match_regex(g));
+        let group_regex = group.map(match_regex);
 
         let mut sounds = self.sounds.lock().await;
         let mut matching = sounds.values_mut().filter(|sound| {
@@ -352,7 +352,7 @@ impl Soundboard {
         group: Option<&str>,
     ) -> Result<(), SoundboardError> {
         let name_regex = match_regex(name);
-        let group_regex = group.map(|g| match_regex(g));
+        let group_regex = group.map(match_regex);
 
         let mut sounds = self.sounds.lock().await;
         let mut matching = sounds.iter().filter_map(|(id, sound)| {
@@ -408,7 +408,6 @@ impl Soundboard {
         let metadata = sounds
             .values()
             .filter(|sound| sound.metadata.guild == guild.0)
-            .clone()
             .into_group_map_by(|sound| &sound.metadata.group)
             .into_iter()
             .sorted_by(|(g1, _), (g2, _)| g1.cmp(g2))
