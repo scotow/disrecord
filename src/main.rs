@@ -166,7 +166,7 @@ impl Handler {
                 Some("download") => self.download_sound(ctx, command).await,
                 Some("delete") => self.delete_sound(ctx, command).await,
                 Some("backup") => self.backup_sounds(ctx, command).await,
-                Some("logs") => self.soundboard_log(ctx, command).await,
+                Some("logs") => self.soundboard_logs(ctx, command).await,
                 _ => (),
             },
             _ => (),
@@ -217,7 +217,7 @@ impl Handler {
 
         if let Some(history) = self
             .history
-            .register(component.channel_id, component.user.id)
+            .register(guild, component.channel_id, component.user.id)
             .await
         {
             let topic = future::join_all(history.into_iter().map(|(user, n)| {
@@ -811,7 +811,11 @@ impl Handler {
         }
     }
 
-    async fn soundboard_log(&self, ctx: Context, command: ApplicationCommandInteraction) {
+    async fn soundboard_logs(&self, ctx: Context, command: ApplicationCommandInteraction) {
+        let Some(guild) = command.guild_id else {
+            return;
+        };
+
         let duration = find_option(&command, "duration", false)
             .and_then(|opt| match opt {
                 CommandDataOptionValue::String(s) => Some(s).map(|s| s.as_str()),
@@ -836,7 +840,7 @@ impl Handler {
             }
         };
 
-        match self.history.get_logs(command.channel_id, duration).await {
+        match self.history.get_logs(guild, duration).await {
             Some((resolved_duration, logs)) if !logs.is_empty() => {
                 let list = future::join_all(logs.into_iter().map(|(user, n)| {
                     user.to_user_cached(&ctx)
