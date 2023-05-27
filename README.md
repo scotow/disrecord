@@ -2,7 +2,7 @@
 [![Build Status](https://img.shields.io/github/actions/workflow/status/scotow/disrecord/docker.yml)](https://github.com/scotow/disrecord/actions)
 
 
-![Logo](banner.png)
+![Banner](banner.png)
 
 ## Features
 
@@ -22,6 +22,8 @@
 - Download sounds
 - Backups as ZIP
 - Basic usage logs
+
+![Soundboard](soundboard.png)
 
 ## Configuration
 
