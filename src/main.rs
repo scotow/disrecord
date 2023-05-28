@@ -7,6 +7,7 @@ use std::{
         atomic::{AtomicU64, Ordering},
         Arc,
     },
+    time::Duration,
 };
 
 use clap::Parser;
@@ -14,7 +15,6 @@ use env_logger::Builder;
 use futures::{future, future::FutureExt};
 use itertools::Itertools;
 use log::{error, info};
-use regex::Regex;
 use serenity::{
     async_trait,
     client::{Context, EventHandler},
@@ -57,6 +57,7 @@ use crate::{
 };
 
 mod button;
+mod command;
 mod history;
 mod options;
 mod recorder;
@@ -413,12 +414,7 @@ impl Handler {
     }
 
     async fn download_recording(&self, ctx: Context, command: ApplicationCommandInteraction) {
-        let Some(requested_user) = find_option(&command, "user", false).and_then(|opt| {
-            match opt {
-                CommandDataOptionValue::User(user, _) => Some(user),
-                _ => None,
-            }
-        }) else {
+        let Some(requested_user) = command::find_user_option(&command, "user", false) else {
             return;
         };
 
@@ -538,63 +534,31 @@ impl Handler {
         let Some(guild) = command.guild_id else {
             return;
         };
-        let Some(attachment) = find_option(&command, "sound", false).and_then(|opt| {
-            match opt {
-                CommandDataOptionValue::Attachment(att) => Some(att),
-                _ => None,
-            }
-        }) else {
+        let Some(attachment) = command::find_attachment_option(&command, "sound", false) else {
             return;
         };
-        let Some(name) = find_option(&command, "name", false).and_then(|opt| {
-            match opt {
-                CommandDataOptionValue::String(s) => Some(s),
-                _ => None,
-            }
-        }) else {
+        let Some(name) = command::find_string_option(&command, "name", false, None) else {
             return;
         };
-        let Some(group) = find_option(&command, "group", false).and_then(|opt| {
-            match opt {
-                CommandDataOptionValue::String(s) => Some(s),
-                _ => None,
-            }
-        }) else {
+        let Some(group) = command::find_string_option(&command, "group", false, None) else {
             return;
         };
-        let emoji = find_option(&command, "emoji", false).and_then(|opt| match opt {
-            CommandDataOptionValue::String(s) => {
-                if Regex::new(r#"^\p{Emoji}$"#)
-                    .expect("Invalid emoji regex")
-                    .is_match(s)
-                {
-                    s.chars().next()
-                } else {
-                    None
-                }
-            }
-            _ => None,
-        });
-        let color = find_option(&command, "color", false)
-            .and_then(|opt| match opt {
-                CommandDataOptionValue::String(s) => Some(button::parse_color(s)),
-                _ => None,
-            })
+        let emoji = command::find_emoji_option(&command, "emoji", false);
+        let color = command::find_string_option(&command, "color", false, None)
+            .map(|color| button::parse_color(color))
             .unwrap_or_else(|| button::determinist(&name.to_lowercase()));
-        let index = find_option(&command, "position", false).and_then(|opt| match opt {
-            CommandDataOptionValue::Integer(n) => Some((*n - 1) as usize),
-            _ => None,
-        });
+        let index = command::find_integer_option(&command, "position", false, None)
+            .map(|p| (p - 1) as usize);
 
         match self
             .soundboard
             .add(
                 attachment,
                 guild,
-                name.clone(),
+                name.to_owned(),
                 emoji,
                 color,
-                group.clone(),
+                group.to_owned(),
                 index,
             )
             .await
@@ -641,18 +605,10 @@ impl Handler {
         let Some(guild) = command.guild_id else {
             return;
         };
-        let Some(name) = find_option(&command, "sound", false).and_then(|opt| {
-            match opt {
-                CommandDataOptionValue::String(s) => Some(s),
-                _ => None,
-            }
-        }) else {
+        let Some(name) = command::find_string_option(&command, "sound", false, None) else {
             return;
         };
-        let group = find_option(&command, "group", false).and_then(|opt| match opt {
-            CommandDataOptionValue::String(s) => Some(s.as_str()),
-            _ => None,
-        });
+        let group = command::find_string_option(&command, "group", false, None);
 
         // Does not support splitting.
         match self.soundboard.get_wav_by_name(guild, name, group).await {
@@ -700,18 +656,10 @@ impl Handler {
         let Some(guild) = command.guild_id else {
             return;
         };
-        let Some(name) = find_option(&command, "sound", false).and_then(|opt| {
-            match opt {
-                CommandDataOptionValue::String(s) => Some(s),
-                _ => None,
-            }
-        }) else {
+        let Some(name) = command::find_string_option(&command, "sound", false, None) else {
             return;
         };
-        let group = find_option(&command, "group", false).and_then(|opt| match opt {
-            CommandDataOptionValue::String(s) => Some(s.as_str()),
-            _ => None,
-        });
+        let group = command::find_string_option(&command, "group", false, None);
 
         let text = match self.soundboard.delete(guild, name, group).await {
             Ok(()) => "Deleted. *(for ever)*".to_owned(),
@@ -816,28 +764,18 @@ impl Handler {
             return;
         };
 
-        let duration = find_option(&command, "duration", false)
-            .and_then(|opt| match opt {
-                CommandDataOptionValue::String(s) => Some(s).map(|s| s.as_str()),
-                _ => None,
-            })
-            .unwrap_or("30s");
-
-        let duration = match humantime::parse_duration(duration) {
-            Ok(duration) => duration,
-            Err(_err) => {
-                command
-                    .create_interaction_response(&ctx, |response| {
-                        response
-                            .kind(InteractionResponseType::ChannelMessageWithSource)
-                            .interaction_response_data(|message| {
-                                message.content("Invalid duration.")
-                            })
-                    })
-                    .await
-                    .expect("Logs response failure");
-                return;
-            }
+        let Some(duration) = command::find_duration_option(&command, "duration", false, Some(Duration::from_secs(30))) else {
+            command
+                .create_interaction_response(&ctx, |response| {
+                    response
+                        .kind(InteractionResponseType::ChannelMessageWithSource)
+                        .interaction_response_data(|message| {
+                            message.content("Invalid duration.")
+                        })
+                })
+                .await
+                .expect("Logs response failure");
+            return;
         };
 
         match self.history.get_logs(guild, duration).await {
@@ -1151,23 +1089,6 @@ fn parse_subcommand(command: &ApplicationCommandInteraction) -> Option<&str> {
         return None;
     };
     Some(&first_option.name)
-}
-
-/// Only check for a depth of 1 if `top_level` if set to false.
-fn find_option<'a>(
-    command: &'a ApplicationCommandInteraction,
-    name: &str,
-    top_level: bool,
-) -> Option<&'a CommandDataOptionValue> {
-    let options = if top_level {
-        &command.data.options
-    } else {
-        &command.data.options.first()?.options
-    };
-    options
-        .iter()
-        .find(|opt| opt.name == name)
-        .and_then(|opt| opt.resolved.as_ref())
 }
 
 fn find_autocompleting(options: &[CommandDataOption]) -> Option<(&str, &CommandDataOptionValue)> {
