@@ -8,7 +8,7 @@
 
 ### Recorder:
 
-- Record users' voice in Discord channels,
+- Record users' voice in Discord channels
 - Whitelist
 - WAV download
 - Customizable buffer duration
