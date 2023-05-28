@@ -565,7 +565,7 @@ impl Handler {
         let emoji = find_option(&command, "emoji", false).and_then(|opt| match opt {
             CommandDataOptionValue::String(s) => {
                 if Regex::new(r#"^\p{Emoji}$"#)
-                    .expect("invalid regex emoji")
+                    .expect("Invalid emoji regex")
                     .is_match(s)
                 {
                     s.chars().next()
