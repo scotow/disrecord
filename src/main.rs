@@ -45,14 +45,14 @@ use songbird::{
     input::{Codec, Container, Input, Reader},
     CoreEvent, Event, EventContext, EventHandler as VoiceEventHandler, SerenityInit,
 };
-use tokio::sync::{mpsc::UnboundedSender, oneshot};
+use tokio::sync::{mpsc::UnboundedSender, oneshot, Mutex};
 use ulid::Ulid;
 use zip::{write::FileOptions as ZipFileOptions, ZipWriter};
 
 use crate::{
     history::History,
     options::Options,
-    recorder::{Action, Recorder},
+    recorder::{Recorder, RecorderAction},
     soundboard::Soundboard,
 };
 
@@ -75,7 +75,7 @@ const AUTOCOMPLETE_MAX_CHOICES: usize = 25;
 struct Handler {
     bot_id: Arc<AtomicU64>,
     allow_delete: bool,
-    recorder_actions_tx: UnboundedSender<Action>,
+    recorder: Arc<Mutex<Recorder>>,
     soundboard: Arc<Soundboard>,
     history: Arc<History>,
 }
@@ -112,21 +112,26 @@ impl EventHandler for Handler {
     }
 }
 
+#[derive(Clone)]
+struct VoiceHandler {
+    guild_recorder: UnboundedSender<RecorderAction>,
+}
+
 #[async_trait]
-impl VoiceEventHandler for Handler {
+impl VoiceEventHandler for VoiceHandler {
     async fn act(&self, ctx: &EventContext<'_>) -> Option<Event> {
         match ctx {
             EventContext::SpeakingStateUpdate(event) => {
                 if let Some(user) = event.user_id {
-                    self.recorder_actions_tx
-                        .send(Action::MapUser(UserId(user.0), event.ssrc))
+                    self.guild_recorder
+                        .send(RecorderAction::MapUser(UserId(user.0), event.ssrc))
                         .expect("Event dispatch error");
                 }
             }
             EventContext::VoicePacket(packet) => {
                 if let Some(audio) = packet.audio {
-                    self.recorder_actions_tx
-                        .send(Action::RegisterVoiceData(
+                    self.guild_recorder
+                        .send(RecorderAction::RegisterVoiceData(
                             packet.packet.ssrc,
                             audio
                                 .chunks_exact(2)
@@ -297,14 +302,11 @@ impl Handler {
             return
         };
 
-        let (tx, rx) = oneshot::channel();
-        self.recorder_actions_tx
-            .send(Action::GetWhitelist(tx))
-            .expect("List request failure");
-
-        let list = rx
+        let list = self
+            .recorder
+            .lock()
             .await
-            .expect("List fetching failure")
+            .get_whitelist()
             .intersection(
                 &ctx.cache
                     .guild(guild)
@@ -334,9 +336,11 @@ impl Handler {
     }
 
     async fn join_whitelist(&self, ctx: Context, command: ApplicationCommandInteraction) {
-        self.recorder_actions_tx
-            .send(Action::AddToWhitelist(command.user.id))
-            .expect("Adding to whitelist failed");
+        self.recorder
+            .lock()
+            .await
+            .add_whitelist(command.user.id)
+            .await;
 
         command
             .create_interaction_response(&ctx, |response| {
@@ -351,9 +355,11 @@ impl Handler {
     }
 
     async fn leave_whitelist(&self, ctx: Context, command: ApplicationCommandInteraction) {
-        self.recorder_actions_tx
-            .send(Action::RemoveFromWhitelist(command.user.id))
-            .expect("Leaving whitelist failed");
+        self.recorder
+            .lock()
+            .await
+            .remove_whitelist(command.user.id)
+            .await;
 
         command
             .create_interaction_response(&ctx, |response| {
@@ -391,15 +397,25 @@ impl Handler {
         let manager = songbird::get(&ctx)
             .await
             .expect("Failed to get songbird manager");
-        let (handler_lock, conn_result) = manager.join(guild, channel).await;
-        conn_result.expect("Voice connexion failure");
+        let call = manager.get_or_insert(guild);
+        let mut call_lock = call.lock().await;
 
-        {
-            let mut handler = handler_lock.lock().await;
-            handler.remove_all_global_events();
-            handler.add_global_event(Event::Core(CoreEvent::SpeakingStateUpdate), self.clone());
-            handler.add_global_event(Event::Core(CoreEvent::VoicePacket), self.clone());
-        }
+        let recorder = VoiceHandler {
+            guild_recorder: self.recorder.lock().await.get_guild_recorder(guild).await,
+        };
+        call_lock.remove_all_global_events();
+        call_lock.add_global_event(
+            Event::Core(CoreEvent::SpeakingStateUpdate),
+            recorder.clone(),
+        );
+        call_lock.add_global_event(Event::Core(CoreEvent::VoicePacket), recorder);
+
+        let handle = call_lock
+            .join(channel)
+            .await
+            .expect("Voice connexion failure");
+        drop(call_lock);
+        handle.await.expect("Voice connexion failure");
 
         command
             .create_interaction_response(&ctx, |response| {
@@ -414,13 +430,20 @@ impl Handler {
     }
 
     async fn download_recording(&self, ctx: Context, command: ApplicationCommandInteraction) {
+        let Some(guild) = command.guild_id else {
+            return
+        };
         let Some(requested_user) = command::find_user_option(&command, "user", false) else {
             return;
         };
 
         let (tx, rx) = oneshot::channel::<Option<VecDeque<i16>>>();
-        self.recorder_actions_tx
-            .send(Action::GetData(requested_user.id, tx))
+        self.recorder
+            .lock()
+            .await
+            .get_guild_recorder(guild)
+            .await
+            .send(RecorderAction::GetVoiceData(requested_user.id, tx))
             .expect("Download request failure");
 
         let data = rx.await.expect("Voice data fetching error");
@@ -832,11 +855,17 @@ impl Handler {
             return;
         }
 
-        let manager = songbird::get(ctx).await.expect("Cannot get voice manager");
-        manager
-            .leave(channel.guild_id)
+        let manager = songbird::get(&ctx)
             .await
-            .expect("Voice disconnection failure");
+            .expect("Failed to get songbird manager");
+        if let Some(call) = manager.get(channel.guild_id) {
+            let mut call_lock = call.lock().await;
+            call_lock
+                .leave()
+                .await
+                .expect("Voice disconnection failure");
+            call_lock.remove_all_global_events();
+        }
     }
 
     async fn register_global_commands(&self, ctx: &Context) {
@@ -1110,13 +1139,15 @@ async fn main() -> ExitCode {
         .init();
     log_panics::init();
 
-    let recorder = Recorder::new(
-        options.voice_buffer_duration,
-        options.voice_buffer_expiration,
-        options.record_whitelist_path,
-    )
-    .await;
-    let tx = recorder.run_loop();
+    let recorder = Arc::new(Mutex::new(
+        Recorder::new(
+            options.voice_buffer_duration,
+            options.voice_buffer_expiration,
+            options.record_whitelist_path,
+        )
+        .await,
+    ));
+    Recorder::cleanup_loop(recorder.clone());
 
     let soundboard = Arc::new(
         Soundboard::new(
@@ -1135,7 +1166,7 @@ async fn main() -> ExitCode {
         .event_handler(Handler {
             bot_id: Arc::new(AtomicU64::new(0)),
             allow_delete: !options.disable_delete,
-            recorder_actions_tx: tx,
+            recorder,
             soundboard,
             history: Arc::new(History::default()),
         })

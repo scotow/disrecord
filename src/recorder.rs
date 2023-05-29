@@ -2,15 +2,16 @@ use std::{
     collections::{HashMap, HashSet, VecDeque},
     mem,
     path::PathBuf,
+    sync::Arc,
     time::{Duration, Instant},
 };
 
 use log::{debug, info, log, log_enabled, Level};
-use serenity::model::id::UserId;
+use serenity::model::id::{GuildId, UserId};
 use tokio::{
     fs::{File, OpenOptions},
     io::AsyncWriteExt,
-    sync::{mpsc, mpsc::UnboundedSender, oneshot::Sender as OneshotSender},
+    sync::{mpsc, mpsc::UnboundedSender, oneshot::Sender as OneshotSender, Mutex},
     time::sleep,
 };
 
@@ -36,10 +37,9 @@ macro_rules! log_voice_data {
 pub struct Recorder {
     buffer_size: Duration,
     clean_timeout: Duration,
-    mapping: HashMap<Ssrc, UserVoiceData>,
     whitelist: HashSet<UserId>,
     whitelist_path: PathBuf,
-    voice_data_received: usize,
+    guilds: HashMap<GuildId, UnboundedSender<RecorderAction>>,
 }
 
 impl Recorder {
@@ -69,97 +69,156 @@ impl Recorder {
         Self {
             buffer_size,
             clean_timeout,
-            mapping: HashMap::new(),
             whitelist,
             whitelist_path,
-            voice_data_received: 0,
+            guilds: HashMap::new(),
         }
     }
 
-    pub fn run_loop(mut self) -> UnboundedSender<Action> {
-        let (tx, mut rx) = mpsc::unbounded_channel::<Action>();
+    pub fn get_whitelist(&self) -> HashSet<UserId> {
+        info!("fetching whitelist ({} users)", self.whitelist.len());
+        self.whitelist.clone()
+    }
+
+    pub async fn add_whitelist(&mut self, user: UserId) {
+        info!("adding user {user} to whitelist");
+        if self.whitelist.insert(user) {
+            let mut file = OpenOptions::new()
+                .append(true)
+                .create(true)
+                .open(&self.whitelist_path)
+                .await
+                .expect("Cannot create whitelist file");
+            file.write_u64(*user.as_u64())
+                .await
+                .expect("Cannot append user id to whitelist");
+
+            for guild in self.guilds.values() {
+                guild
+                    .send(RecorderAction::AddToWhitelist(user))
+                    .expect("Failed to propagate whitelist removal");
+            }
+
+            info!("user {user} added to whitelist");
+        } else {
+            info!("user {user} already in whitelist");
+        }
+    }
+
+    pub async fn remove_whitelist(&mut self, user: UserId) {
+        info!("removing user {user} from whitelist");
+        if self.whitelist.remove(&user) {
+            File::create(&self.whitelist_path)
+                .await
+                .expect("Cannot open whitelist file")
+                .write_all(
+                    &self
+                        .whitelist
+                        .iter()
+                        .flat_map(|user| user.as_u64().to_be_bytes())
+                        .collect::<Vec<_>>(),
+                )
+                .await
+                .expect("Cannot write whitelist file");
+
+            for guild in self.guilds.values() {
+                guild
+                    .send(RecorderAction::RemoveFromWhitelist(user))
+                    .expect("Failed to propagate whitelist removal");
+            }
+
+            info!("user {user} removed from whitelist");
+        } else {
+            info!("user {user} not in whitelist");
+        }
+    }
+
+    pub async fn get_guild_recorder(&mut self, guild: GuildId) -> UnboundedSender<RecorderAction> {
+        match self.guilds.get(&guild) {
+            Some(channel) => channel.clone(),
+            None => {
+                let channel = GuildRecorder {
+                    whitelist: self.whitelist.clone(),
+                    buffer_size: self.buffer_size,
+                    voice_data: HashMap::new(),
+                    voice_data_received: 0,
+                    clean_timeout: self.clean_timeout,
+                }
+                .run_loop();
+                self.guilds.insert(guild, channel.clone());
+                channel
+            }
+        }
+    }
+
+    pub fn cleanup_loop(recorder: Arc<Mutex<Self>>) {
+        tokio::spawn(async move {
+            loop {
+                sleep(Duration::from_secs(30)).await;
+                for guild_recorder in recorder.lock().await.guilds.values() {
+                    guild_recorder
+                        .send(RecorderAction::CleanOld)
+                        .expect("Failed to send cleanup message");
+                }
+            }
+        });
+    }
+}
+
+pub struct GuildRecorder {
+    whitelist: HashSet<UserId>,
+    buffer_size: Duration,
+    voice_data: HashMap<Ssrc, UserVoiceData>,
+    voice_data_received: usize,
+    clean_timeout: Duration,
+}
+
+impl GuildRecorder {
+    fn run_loop(mut self) -> UnboundedSender<RecorderAction> {
+        let (tx, mut rx) = mpsc::unbounded_channel::<RecorderAction>();
         tokio::spawn(async move {
             loop {
                 let event = rx.recv().await.expect("Event channel closed.");
                 match event {
-                    Action::AddToWhitelist(user) => {
-                        info!("adding user {user} to whitelist");
-                        if self.whitelist.insert(user) {
-                            let mut file = OpenOptions::new()
-                                .append(true)
-                                .create(true)
-                                .open(&self.whitelist_path)
-                                .await
-                                .expect("Cannot create whitelist file");
-                            file.write_u64(*user.as_u64())
-                                .await
-                                .expect("Cannot append user id to whitelist");
-                            info!("user {user} added to whitelist");
-                        } else {
-                            info!("user {user} already in whitelist");
-                        }
+                    RecorderAction::AddToWhitelist(user) => {
+                        self.whitelist.insert(user);
                     }
-                    Action::RemoveFromWhitelist(user) => {
-                        // Remove from white list.
-                        info!("removing user {user} from whitelist");
-                        if self.whitelist.remove(&user) {
-                            File::create(&self.whitelist_path)
-                                .await
-                                .expect("Cannot open whitelist file")
-                                .write_all(
-                                    &self
-                                        .whitelist
-                                        .iter()
-                                        .flat_map(|user| user.as_u64().to_be_bytes())
-                                        .collect::<Vec<_>>(),
-                                )
-                                .await
-                                .expect("Cannot write whitelist file");
-                            info!("user {user} removed from whitelist");
-                        } else {
-                            info!("user {user} not in whitelist");
-                        }
-
-                        // Remove data, but keep mapping.
+                    RecorderAction::RemoveFromWhitelist(user) => {
+                        self.whitelist.remove(&user);
                         if let Some(user_data) = self
-                            .mapping
+                            .voice_data
                             .values_mut()
                             .find(|user_data| user_data.id == user)
                         {
                             user_data.data = None;
                         }
                     }
-                    Action::GetWhitelist(tx) => {
-                        info!("fetching whitelist ({} users)", self.whitelist.len());
-                        tx.send(self.whitelist.clone())
-                            .expect("Cannot send whitelist.");
-                    }
-                    Action::MapUser(id, ssrc) => {
+                    RecorderAction::MapUser(id, ssrc) => {
                         info!("mapping ssrc {ssrc} to user {id}");
                         let user_data = if let Some(previous) = self
-                            .mapping
+                            .voice_data
                             .iter()
                             .find_map(|(ssrc, user)| (user.id == id).then_some(*ssrc))
                         {
                             info!("replacing mapping for ssrc {ssrc} and user {id}");
-                            let mut previous = self.mapping.remove(&previous).unwrap();
+                            let mut previous = self.voice_data.remove(&previous).unwrap();
                             previous.last_insert = Instant::now();
                             previous
                         } else {
                             info!("creating new mapping for ssrc {ssrc} and user {id}");
                             UserVoiceData::new(id)
                         };
-                        self.mapping.insert(ssrc, user_data);
+                        self.voice_data.insert(ssrc, user_data);
                         info!("mapped ssrc {ssrc} to user {id}");
                     }
-                    Action::RegisterVoiceData(ssrc, data) => {
+                    RecorderAction::RegisterVoiceData(ssrc, data) => {
                         log_voice_data!(
                             self,
                             "registering {} bytes voice data for ssrc {ssrc}",
                             data.len() * 2
                         );
 
-                        match self.mapping.get_mut(&ssrc) {
+                        match self.voice_data.get_mut(&ssrc) {
                             Some(user_data) => {
                                 log_voice_data!(
                                     self,
@@ -180,10 +239,10 @@ impl Recorder {
                             }
                         }
                     }
-                    Action::GetData(user, tx) => {
+                    RecorderAction::GetVoiceData(user, tx) => {
                         info!("fetching data for user {user}");
                         let data =
-                            match self.mapping.values().find_map(|user_data| {
+                            match self.voice_data.values().find_map(|user_data| {
                                 (user_data.id == user).then_some(&user_data.data)
                             }) {
                                 Some(Some(data)) if !data.is_empty() => Some(data.clone()),
@@ -195,10 +254,10 @@ impl Recorder {
                         );
                         tx.send(data).expect("Voice data send failed.");
                     }
-                    Action::Cleanup => {
+                    RecorderAction::CleanOld => {
                         debug!("cleaning users voice data that hasn't speak for a while");
                         let mut cleaned = 0;
-                        for user_data in self.mapping.values_mut() {
+                        for user_data in self.voice_data.values_mut() {
                             if user_data.last_insert.elapsed() > self.clean_timeout
                                 && user_data.data.is_some()
                             {
@@ -218,18 +277,6 @@ impl Recorder {
                 }
             }
         });
-
-        // Cleaner loop.
-        let tx_ref = tx.clone();
-        tokio::spawn(async move {
-            loop {
-                sleep(Duration::from_secs(30)).await;
-                tx_ref
-                    .send(Action::Cleanup)
-                    .expect("Cleanup message failure.");
-            }
-        });
-
         tx
     }
 }
@@ -266,12 +313,11 @@ impl UserVoiceData {
 }
 
 #[derive(Debug)]
-pub enum Action {
+pub enum RecorderAction {
     AddToWhitelist(UserId),
     RemoveFromWhitelist(UserId),
-    GetWhitelist(OneshotSender<HashSet<UserId>>),
     MapUser(UserId, Ssrc),
     RegisterVoiceData(Ssrc, Vec<i16>),
-    GetData(UserId, OneshotSender<Option<VecDeque<i16>>>),
-    Cleanup,
+    GetVoiceData(UserId, OneshotSender<Option<VecDeque<i16>>>),
+    CleanOld,
 }
