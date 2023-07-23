@@ -411,6 +411,33 @@ impl Soundboard {
         }
     }
 
+    pub async fn get_id(
+        &self,
+        guild: GuildId,
+        name: &str,
+        group: Option<&str>,
+    ) -> Result<Ulid, SoundboardError> {
+        let name_regex = match_regex(name);
+        let group_regex = group.map(match_regex);
+
+        let sounds = self.sounds.lock().await;
+        let mut matching = sounds.iter().filter_map(|(id, sound)| {
+            (sound.metadata.guild == guild.0
+                && name_regex.is_match(&sound.metadata.name)
+                && group_regex
+                    .as_ref()
+                    .map(|rg| rg.is_match(&sound.metadata.group))
+                    .unwrap_or(true))
+            .then_some(*id)
+        });
+        let id = matching.next().ok_or(SoundboardError::SoundNotFound)?;
+        if matching.next().is_some() {
+            return Err(SoundboardError::SoundNameAmbiguous);
+        }
+
+        Ok(id)
+    }
+
     async fn overwrite_metadata_file(
         &self,
         sounds: &HashMap<Ulid, Sound>,

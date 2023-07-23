@@ -2,6 +2,7 @@ use std::{
     borrow::Cow,
     collections::{HashSet, VecDeque},
     io::{Cursor, Write},
+    net::SocketAddr,
     process::ExitCode,
     sync::{
         atomic::{AtomicU64, Ordering},
@@ -10,6 +11,11 @@ use std::{
     time::Duration,
 };
 
+use axum::{
+    extract::{Path, State},
+    http::StatusCode,
+    routing, Router, Server,
+};
 use clap::Parser;
 use env_logger::Builder;
 use futures::{future, future::FutureExt};
@@ -43,7 +49,7 @@ use serenity::{
 use songbird::{
     driver::DecodeMode,
     input::{Codec, Container, Input, Reader},
-    CoreEvent, Event, EventContext, EventHandler as VoiceEventHandler, SerenityInit,
+    CoreEvent, Event, EventContext, EventHandler as VoiceEventHandler, SerenityInit, Songbird,
 };
 use tokio::sync::{mpsc::UnboundedSender, oneshot, Mutex};
 use ulid::Ulid;
@@ -172,6 +178,7 @@ impl Handler {
                 Some("download") => self.download_sound(ctx, command).await,
                 Some("delete") => self.delete_sound(ctx, command).await,
                 Some("change-color") => self.change_sound_color(ctx, command).await,
+                Some("id") => self.sound_id(ctx, command).await,
                 Some("backup") => self.backup_sounds(ctx, command).await,
                 Some("logs") => self.soundboard_logs(ctx, command).await,
                 _ => (),
@@ -185,38 +192,17 @@ impl Handler {
             return;
         };
 
-        let play_future = async {
-            let Some(mut data) = self
-                .soundboard
-                .get_wav(Ulid::from_string(&component.data.custom_id).expect("Invalid sound id"))
-                .await else {
-                return false;
-            };
-
-            let manager = songbird::get(&ctx)
-                .await
-                .expect("Failed to get songbird manager");
-            let Some(call) = manager.get(guild) else {
-                return false;
-            };
-            let mut call_guard = call.lock().await;
-            if call_guard.current_channel().is_none() {
-                return false;
-            }
-
-            wav::remove_header(&mut data);
-            call_guard.play_source(Input::new(
-                false,
-                Reader::from_memory(data),
-                Codec::Pcm,
-                Container::Raw,
-                None,
-            ));
-
-            true
+        let Ok(sound) = Ulid::from_string(&component.data.custom_id) else {
+            return;
         };
+        let manager = songbird::get(&ctx)
+            .await
+            .expect("Failed to get songbird manager");
 
-        let (defer, played) = tokio::join!(component.defer(&ctx), play_future);
+        let (defer, played) = tokio::join!(
+            component.defer(&ctx),
+            play_sound(manager, &self.soundboard, guild, sound)
+        );
         defer.expect("Failed to defer sound play");
         if !played {
             return;
@@ -728,7 +714,30 @@ impl Handler {
                     .interaction_response_data(|message| message.content(text))
             })
             .await
-            .expect("Cannot send sound deletion error message");
+            .expect("Cannot send sound color change error message");
+    }
+
+    async fn sound_id(&self, ctx: Context, command: ApplicationCommandInteraction) {
+        let Some(guild) = command.guild_id else {
+            return;
+        };
+        let Some(name) = command::find_string_option(&command, "sound", false, None) else {
+            return;
+        };
+        let group = command::find_string_option(&command, "group", false, None);
+
+        let text = match self.soundboard.get_id(guild, name, group).await {
+            Ok(id) => id.to_string(),
+            Err(err) => err.to_string(),
+        };
+        command
+            .create_interaction_response(&ctx, |response| {
+                response
+                    .kind(InteractionResponseType::ChannelMessageWithSource)
+                    .interaction_response_data(|message| message.content(text))
+            })
+            .await
+            .expect("Cannot send sound ID error message");
     }
 
     async fn backup_sounds(&self, ctx: Context, command: ApplicationCommandInteraction) {
@@ -1131,6 +1140,30 @@ impl Handler {
                         })
                 });
 
+                // ID.
+                command.create_option(|subcommand| {
+                    subcommand
+                        .kind(CommandOptionType::SubCommand)
+                        .name("id")
+                        .description("Get the ID of a sound")
+                        .create_sub_option(|option| {
+                            option
+                                .kind(CommandOptionType::String)
+                                .name("sound")
+                                .description("Sound name to fetch")
+                                .required(true)
+                                .set_autocomplete(true)
+                        })
+                        .create_sub_option(|option| {
+                            option
+                                .kind(CommandOptionType::String)
+                                .name("group")
+                                .description("Group name of the sound to fetch")
+                                .required(false)
+                                .set_autocomplete(true)
+                        })
+                });
+
                 // Backup.
                 command.create_option(|subcommand| {
                     subcommand
@@ -1198,6 +1231,49 @@ fn find_autocompleting(options: &[CommandDataOption]) -> Option<(&str, &CommandD
     })
 }
 
+async fn play_sound(
+    manager: Arc<Songbird>,
+    soundboard: &Soundboard,
+    guild: GuildId,
+    sound: Ulid,
+) -> bool {
+    let Some(mut data) = soundboard
+        .get_wav(sound)
+        .await else {
+        return false;
+    };
+
+    let Some(call) = manager.get(guild) else {
+        return false;
+    };
+    let mut call_guard = call.lock().await;
+    if call_guard.current_channel().is_none() {
+        return false;
+    }
+
+    wav::remove_header(&mut data);
+    call_guard.play_source(Input::new(
+        false,
+        Reader::from_memory(data),
+        Codec::Pcm,
+        Container::Raw,
+        None,
+    ));
+
+    true
+}
+
+async fn play_sound_http(
+    State((songbird, soundboard)): State<(Arc<Songbird>, Arc<Soundboard>)>,
+    Path((guild, sound)): Path<(GuildId, Ulid)>,
+) -> StatusCode {
+    if play_sound(songbird, &soundboard, guild, sound).await {
+        StatusCode::OK
+    } else {
+        StatusCode::NOT_FOUND
+    }
+}
+
 #[tokio::main]
 async fn main() -> ExitCode {
     let options = Options::parse();
@@ -1230,19 +1306,38 @@ async fn main() -> ExitCode {
     Arc::clone(&soundboard).cache_loop();
 
     let intents = GatewayIntents::all();
+    let songbird =
+        Songbird::serenity_from_config(songbird::Config::default().decode_mode(DecodeMode::Decode));
     let mut client = Client::builder(options.discord_token, intents)
         .event_handler(Handler {
             bot_id: Arc::new(AtomicU64::new(0)),
             allow_delete: !options.disable_delete,
             recorder,
-            soundboard,
+            soundboard: Arc::clone(&soundboard),
             history: Arc::new(History::default()),
         })
-        .register_songbird_from_config(songbird::Config::default().decode_mode(DecodeMode::Decode))
+        .register_songbird_with(Arc::clone(&songbird))
         .await
         .expect("Error creating client");
 
+    let server = Server::bind(&SocketAddr::new(
+        options.soundboard_http_address,
+        options.soundboard_http_port,
+    ))
+    .serve(
+        Router::new()
+            .route(
+                "/guilds/:guild/sounds/:sound/play",
+                routing::post(play_sound_http),
+            )
+            .with_state((songbird, soundboard))
+            .into_make_service(),
+    );
+
     info!("disrecord bot started");
-    error!("bot starting error: {}", client.start().await.unwrap_err());
+    error!(
+        "bot starting error: {:?}",
+        tokio::join!(client.start(), server)
+    );
     ExitCode::FAILURE
 }

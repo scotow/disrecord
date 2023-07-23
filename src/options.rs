@@ -1,4 +1,4 @@
-use std::{path::PathBuf, time::Duration};
+use std::{net::IpAddr, path::PathBuf, time::Duration};
 
 use clap::{ArgAction, Parser};
 use log::LevelFilter;
@@ -49,6 +49,10 @@ pub struct Options {
     pub ffmpeg_path: PathBuf,
     #[arg(short = 'r', long)]
     pub disable_delete: bool,
+    #[arg(short = 'a', long, default_value("127.0.0.1"))]
+    pub soundboard_http_address: IpAddr,
+    #[arg(short = 'p', long, default_value("8080"))]
+    pub soundboard_http_port: u16,
 }
 
 impl Options {

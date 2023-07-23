@@ -22,6 +22,7 @@
 - Download sounds
 - Backups as ZIP
 - Basic usage logs
+- HTTP play sound endpoint
 
 ![Soundboard](soundboard.png)
 
@@ -44,6 +45,8 @@ Options:
   -c, --sound-cache-duration <SOUND_CACHE_DURATION>          [default: 3m]
   -f, --ffmpeg-path <FFMPEG_PATH>                            [default: ffmpeg]
   -r, --disable-delete
+  -a, --soundboard-http-address <SOUNDBOARD_HTTP_ADDRESS>    [default: 127.0.0.1]
+  -p, --soundboard-http-port <SOUNDBOARD_HTTP_PORT>          [default: 8080]
   -h, --help                                                 Print help
   -V, --version                                              Print version
 ```
