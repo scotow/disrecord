@@ -171,6 +171,7 @@ impl Handler {
                 Some("upload") => self.upload_sound(ctx, command).await,
                 Some("download") => self.download_sound(ctx, command).await,
                 Some("delete") => self.delete_sound(ctx, command).await,
+                Some("change-color") => self.change_sound_color(ctx, command).await,
                 Some("backup") => self.backup_sounds(ctx, command).await,
                 Some("logs") => self.soundboard_logs(ctx, command).await,
                 _ => (),
@@ -698,6 +699,38 @@ impl Handler {
             .expect("Cannot send sound deletion error message");
     }
 
+    async fn change_sound_color(&self, ctx: Context, command: ApplicationCommandInteraction) {
+        let Some(guild) = command.guild_id else {
+            return;
+        };
+        let Some(name) = command::find_string_option(&command, "sound", false, None) else {
+            return;
+        };
+        let group = command::find_string_option(&command, "group", false, None);
+        let Some(color) = command::find_string_option(&command, "color", false, None)
+            .map(|color| button::parse_color(color)) else {
+            return;
+        };
+
+        let text = match self
+            .soundboard
+            .change_color(guild, name, group, color)
+            .await
+        {
+            Ok(true) => "Sound color changed.".to_owned(),
+            Ok(false) => "The sound already had this color.".to_owned(),
+            Err(err) => err.to_string(),
+        };
+        command
+            .create_interaction_response(&ctx, |response| {
+                response
+                    .kind(InteractionResponseType::ChannelMessageWithSource)
+                    .interaction_response_data(|message| message.content(text))
+            })
+            .await
+            .expect("Cannot send sound deletion error message");
+    }
+
     async fn backup_sounds(&self, ctx: Context, command: ApplicationCommandInteraction) {
         let Some(guild) = command.guild_id else {
             return;
@@ -1062,6 +1095,41 @@ impl Handler {
                             })
                     });
                 }
+
+                // Change color.
+                command.create_option(|subcommand| {
+                    subcommand
+                        .kind(CommandOptionType::SubCommand)
+                        .name("change-color")
+                        .description("Change the color of a soundboard button")
+                        .create_sub_option(|option| {
+                            option
+                                .kind(CommandOptionType::String)
+                                .name("sound")
+                                .description("Sound name to change")
+                                .required(true)
+                                .set_autocomplete(true)
+                        })
+                        .create_sub_option(|option| {
+                            option
+                                .kind(CommandOptionType::String)
+                                .name("color")
+                                .description("New color of the button")
+                                .required(true)
+                                .add_string_choice("blue", button::as_str(ButtonStyle::Primary))
+                                .add_string_choice("green", button::as_str(ButtonStyle::Success))
+                                .add_string_choice("red", button::as_str(ButtonStyle::Danger))
+                                .add_string_choice("grey", button::as_str(ButtonStyle::Secondary))
+                        })
+                        .create_sub_option(|option| {
+                            option
+                                .kind(CommandOptionType::String)
+                                .name("group")
+                                .description("Group name of the sound to modify")
+                                .required(false)
+                                .set_autocomplete(true)
+                        })
+                });
 
                 // Backup.
                 command.create_option(|subcommand| {
