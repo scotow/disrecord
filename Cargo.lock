@@ -406,7 +406,7 @@ dependencies = [
 
 [[package]]
 name = "disrecord"
-version = "0.2.17"
+version = "0.2.18"
 dependencies = [
  "axum",
  "bincode",
@@ -1531,9 +1531,9 @@ dependencies = [
 
 [[package]]
 name = "serenity"
-version = "0.11.5"
+version = "0.11.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "82fd5e7b5858ad96e99d440138f34f5b98e1b959ebcd3a1036203b30e78eb788"
+checksum = "d007dc45584ecc47e791f2a9a7cf17bf98ac386728106f111159c846d624be3f"
 dependencies = [
  "async-trait",
  "async-tungstenite",

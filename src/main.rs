@@ -845,24 +845,25 @@ impl Handler {
 
         match self.history.get_logs(guild, duration).await {
             Some((resolved_duration, logs)) if !logs.is_empty() => {
-                let list = future::join_all(logs.into_iter().map(|(user, n)| {
-                    user.to_user_cached(&ctx)
-                        .map(move |u| u.map(|u| format!("1. {}: {}", u.name, n)))
-                }))
-                .await
-                .into_iter()
-                .flatten()
-                .join("\n");
                 command
                     .create_interaction_response(&ctx, |response| {
                         response
                             .kind(InteractionResponseType::ChannelMessageWithSource)
                             .interaction_response_data(|message| {
-                                message.content(format!(
-                                    "Soundboard usage for the last {}:\n{}",
-                                    humantime::format_duration(resolved_duration),
-                                    list
-                                ))
+                                message
+                                    .content(format!(
+                                        "Soundboard usage for the last {}:\n{}",
+                                        humantime::format_duration(resolved_duration),
+                                        logs.into_iter()
+                                            .map(|(user, count)| format!(
+                                                // Markdown list auto increment number.
+                                                "1. {}: {}",
+                                                Mention::from(user),
+                                                count
+                                            ))
+                                            .join("\n")
+                                    ))
+                                    .allowed_mentions(|mentions| mentions.empty_parse())
                             })
                     })
                     .await
@@ -873,7 +874,9 @@ impl Handler {
                     .create_interaction_response(&ctx, |response| {
                         response
                             .kind(InteractionResponseType::ChannelMessageWithSource)
-                            .interaction_response_data(|message| message.content("No logs founds."))
+                            .interaction_response_data(|message| {
+                                message.content("No logs available.")
+                            })
                     })
                     .await
                     .expect("Logs response failure");

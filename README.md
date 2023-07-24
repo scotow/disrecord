@@ -58,3 +58,7 @@ If you prefer to run Disrecord as a Docker container, you can either build the i
 ```
 docker run -v disrecord:/disrecord ghcr.io/scotow/disrecord/disrecord:latest -t DISCORD_TOKEN -w /disrecord/record-whitelist -s /disrecord/soundboard -S /disrecord
 ```
+
+### Binding to all interfaces
+
+By default, Disrecord will only listen on the loopback interface, aka. `127.0.0.1`. If you don't want to host Disrecord behind a reverse proxy or if you are using the Docker image, you should specify the `0.0.0.0` address by using the `-a | --soundboard-http-address` option.
