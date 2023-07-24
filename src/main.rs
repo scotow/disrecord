@@ -311,11 +311,13 @@ impl Handler {
                 response
                     .kind(InteractionResponseType::ChannelMessageWithSource)
                     .interaction_response_data(|message| {
-                        message.content(if list.is_empty() {
-                            "*Nobody.*".to_owned()
-                        } else {
-                            list.into_iter().map(Mention::from).join(", ")
-                        })
+                        message
+                            .content(if list.is_empty() {
+                                "*Nobody.*".to_owned()
+                            } else {
+                                list.into_iter().map(Mention::from).join(", ")
+                            })
+                            .allowed_mentions(|mentions| mentions.empty_parse())
                     })
             })
             .await
