@@ -273,34 +273,32 @@ impl Soundboard {
 
         // Resolve index position.
         let mut overwrite_required = false;
-        let group_indexes = sounds.values().filter_map(|s| {
-            (s.metadata.guild == guild.0 && s.metadata.group == group).then_some(s.metadata.index)
-        });
-        let last_index = group_indexes.clone().max();
+        let group_sounds = sounds
+            .values()
+            .filter(|s| s.metadata.guild == guild.0 && s.metadata.group == group);
+        let last_index = group_sounds.clone().map(|s| s.metadata.index).max();
 
         // IDEA: Append with gap of 1M. And when inserting between, insert at equal
         // distance between (N-1) and (N+1).
         let index = match (last_index, requested_index) {
             (None, _) => 0,
-            (Some(last_index), None) => last_index + 1,
-            (Some(last_index), Some(requested_index)) if requested_index > last_index => {
-                last_index + 1
-            }
-            (Some(_), Some(requested_index)) => {
-                // If there is a gap in the indexes, use it.
-                if !group_indexes.clone().contains(&requested_index) {
-                    requested_index
+            (Some(last_index), None) => dbg!(last_index + 1),
+            (Some(last_index), Some(requested_index)) => {
+                let group_len = group_sounds.clone().count();
+                if requested_index >= group_len {
+                    last_index + 1
                 } else {
                     overwrite_required = true;
-                    for sound_index in sounds.values_mut().filter_map(|s| {
-                        (s.metadata.guild == guild.0
-                            && s.metadata.group == group
-                            && s.metadata.index >= requested_index)
-                            .then_some(&mut s.metadata.index)
-                    }) {
-                        *sound_index += 1;
+                    let mut sounds = sounds
+                        .values_mut()
+                        .filter(|s| s.metadata.guild == guild.0 && s.metadata.group == group)
+                        .collect_vec();
+                    sounds.sort_by_key(|s| s.metadata.index);
+                    let prev_index = sounds[requested_index].metadata.index;
+                    for sound in &mut sounds[requested_index..] {
+                        sound.metadata.index += 1;
                     }
-                    requested_index
+                    prev_index
                 }
             }
         };
@@ -320,6 +318,15 @@ impl Soundboard {
         fs::write(metadata.get_file_path(&self.sounds_dir_path), &data)
             .await
             .map_err(|_| SoundboardError::SoundWrite)?;
+
+        // Write metadata to disk (partial or full overwrite).
+        sounds.insert(
+            metadata.id,
+            Sound {
+                metadata: metadata.clone(),
+                data: CachedSound::Cached(data, Instant::now()),
+            },
+        );
         if overwrite_required {
             self.overwrite_metadata_file(&sounds).await?;
         } else {
@@ -333,14 +340,6 @@ impl Soundboard {
                 .await
                 .map_err(|_| SoundboardError::SoundWrite)?;
         }
-
-        sounds.insert(
-            metadata.id,
-            Sound {
-                metadata,
-                data: CachedSound::Cached(data, Instant::now()),
-            },
-        );
 
         Ok(id)
     }
