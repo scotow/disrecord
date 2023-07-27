@@ -9,6 +9,7 @@ use std::{
 
 use bincode::Options;
 use itertools::Itertools;
+use rand::seq::IteratorRandom;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -435,6 +436,15 @@ impl Soundboard {
         }
 
         Ok(id)
+    }
+
+    pub async fn random_id(&self, guild: GuildId) -> Option<Ulid> {
+        self.sounds
+            .lock()
+            .await
+            .values()
+            .filter_map(|sound| (sound.metadata.guild == guild.0).then_some(sound.metadata.id))
+            .choose(&mut rand::thread_rng())
     }
 
     async fn overwrite_metadata_file(
