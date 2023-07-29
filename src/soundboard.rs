@@ -184,7 +184,7 @@ impl Soundboard {
         attachment: &Attachment,
         guild: GuildId,
         name: String,
-        emoji: Option<char>,
+        emoji: Option<String>,
         color: ButtonStyle,
         mut group: String,
         requested_index: Option<usize>,
@@ -283,7 +283,7 @@ impl Soundboard {
         // distance between (N-1) and (N+1).
         let index = match (last_index, requested_index) {
             (None, _) => 0,
-            (Some(last_index), None) => dbg!(last_index + 1),
+            (Some(last_index), None) => last_index + 1,
             (Some(last_index), Some(requested_index)) => {
                 let group_len = group_sounds.clone().count();
                 if requested_index >= group_len {
@@ -525,7 +525,7 @@ pub struct SoundMetadata {
     guild: u64,
     pub id: Ulid,
     pub name: String,
-    pub emoji: Option<char>,
+    pub emoji: Option<String>,
     pub color: ButtonStyle,
     group: String,
     index: usize,

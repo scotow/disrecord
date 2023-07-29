@@ -78,15 +78,15 @@ pub fn find_emoji_option(
     command: &ApplicationCommandInteraction,
     name: &str,
     top_level: bool,
-) -> Option<char> {
+) -> Option<String> {
     let option = find_string_option(command, name, top_level, None)?;
-    if Regex::new(r#"^\p{Emoji}$"#)
-        .expect("Invalid emoji regex")
-        .is_match(option)
-    {
-        option.chars().next()
+    if emojis::get(option).is_some() {
+        Some(option.to_owned())
     } else {
-        None
+        Regex::new(r#"\p{Emoji}"#)
+            .expect("Invalid emoji regex")
+            .find(option)
+            .map(|m| m.as_str().to_owned())
     }
 }
 

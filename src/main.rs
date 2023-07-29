@@ -524,8 +524,8 @@ impl Handler {
                                                 .custom_id(sound.id.to_string())
                                                 .style(sound.color)
                                                 .label(&sound.name);
-                                            if let Some(emoji) = sound.emoji {
-                                                button.emoji(ReactionType::from(emoji));
+                                            if let Some(emoji) = &sound.emoji {
+                                                button.emoji(ReactionType::Unicode(emoji.clone()));
                                             }
                                             button
                                         });
@@ -568,7 +568,7 @@ impl Handler {
                 attachment,
                 guild,
                 name.to_owned(),
-                emoji,
+                emoji.clone(),
                 color,
                 group.to_owned(),
                 index,
@@ -589,7 +589,7 @@ impl Handler {
                                                 .label(name)
                                                 .style(color);
                                             if let Some(emoji) = emoji {
-                                                button.emoji(ReactionType::from(emoji));
+                                                button.emoji(ReactionType::Unicode(emoji));
                                             }
                                             button
                                         })
