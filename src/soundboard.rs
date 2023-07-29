@@ -447,6 +447,15 @@ impl Soundboard {
             .choose(&mut rand::thread_rng())
     }
 
+    pub async fn latest_id(&self, guild: GuildId) -> Option<Ulid> {
+        self.sounds
+            .lock()
+            .await
+            .values()
+            .filter_map(|sound| (sound.metadata.guild == guild.0).then_some(sound.metadata.id))
+            .max()
+    }
+
     async fn overwrite_metadata_file(
         &self,
         sounds: &HashMap<Ulid, Sound>,

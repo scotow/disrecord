@@ -1286,11 +1286,17 @@ async fn play_random_sound_http(
     let Some(sound) = soundboard.random_id(guild).await else {
         return StatusCode::NOT_FOUND
     };
-    if play_sound(songbird, &soundboard, guild, sound).await {
-        StatusCode::OK
-    } else {
-        StatusCode::NOT_FOUND
-    }
+    play_sound_http(State((songbird, soundboard)), Path((guild, sound))).await
+}
+
+async fn play_latest_sound_http(
+    State((songbird, soundboard)): State<(Arc<Songbird>, Arc<Soundboard>)>,
+    Path(guild): Path<GuildId>,
+) -> StatusCode {
+    let Some(sound) = soundboard.latest_id(guild).await else {
+        return StatusCode::NOT_FOUND
+    };
+    play_sound_http(State((songbird, soundboard)), Path((guild, sound))).await
 }
 
 #[tokio::main]
@@ -1352,6 +1358,10 @@ async fn main() -> ExitCode {
             .route(
                 "/guilds/:guild/sounds/random/play",
                 routing::post(play_random_sound_http),
+            )
+            .route(
+                "/guilds/:guild/sounds/latest/play",
+                routing::post(play_latest_sound_http),
             )
             .with_state((songbird, soundboard))
             .into_make_service(),
