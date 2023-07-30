@@ -51,6 +51,17 @@ Options:
   -V, --version                                              Print version
 ```
 
+### Running locally
+
+```sh
+cargo run -- [OPTIONS]
+```
+
+#### Dependencies:
+
+- Opus ([`songbird`'s README](https://github.com/serenity-rs/songbird#dependencies))
+- [`ffmpeg`](https://ffmpeg.org/download.html) command to transcode audio files on the fly (optional)
+
 ### Docker
 
 If you prefer to run Disrecord as a Docker container, you can either build the image yourself using the Dockerfile available in this repo, or you can use the [image](https://github.com/scotow/disrecord/pkgs/container/disrecord%2Fdisrecord) built by the GitHub action.
