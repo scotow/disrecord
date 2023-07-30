@@ -6,6 +6,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use itertools::Itertools;
 use log::{debug, info, log, log_enabled, Level};
 use serenity::model::id::{GuildId, UserId};
 use tokio::{
@@ -254,6 +255,48 @@ impl GuildRecorder {
                         );
                         tx.send(data).expect("Voice data send failed.");
                     }
+                    RecorderAction::GetVoiceDataChunks(user, len, tx) => {
+                        info!("fetching data for user {user}");
+                        let data =
+                            match self.voice_data.values().find_map(|user_data| {
+                                (user_data.id == user).then_some(&user_data.data)
+                            }) {
+                                Some(Some(data)) if !data.is_empty() => {
+                                    let data = data.into_iter().copied().collect_vec();
+                                    let mut chunks = data
+                                        .chunks(FREQUENCY / 50)
+                                        .rev()
+                                        .group_by(|c| c.iter().any(|&f| f != 0))
+                                        .into_iter()
+                                        .filter(|&(is_voice, _)| is_voice)
+                                        .map(|(_, frames)| {
+                                            frames
+                                                .into_iter()
+                                                .collect_vec()
+                                                .into_iter()
+                                                .rev()
+                                                .flatten()
+                                                .copied()
+                                                .collect_vec()
+                                        })
+                                        .filter(|chunk| chunk.len() >= FREQUENCY / 2)
+                                        .take(len)
+                                        .collect_vec();
+                                    if chunks.is_empty() {
+                                        None
+                                    } else {
+                                        chunks.reverse();
+                                        Some(chunks)
+                                    }
+                                }
+                                _ => None,
+                            };
+                        info!(
+                            "fetched {} voice chunks for user {user}",
+                            data.as_ref().map(|d| d.len()).unwrap_or(0)
+                        );
+                        tx.send(data).expect("Voice data chunks send failed.");
+                    }
                     RecorderAction::CleanOld => {
                         debug!("cleaning users voice data that hasn't speak for a while");
                         let mut cleaned = 0;
@@ -319,5 +362,6 @@ pub enum RecorderAction {
     MapUser(UserId, Ssrc),
     RegisterVoiceData(Ssrc, Vec<i16>),
     GetVoiceData(UserId, OneshotSender<Option<VecDeque<i16>>>),
+    GetVoiceDataChunks(UserId, usize, OneshotSender<Option<Vec<Vec<i16>>>>),
     CleanOld,
 }

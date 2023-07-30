@@ -13,6 +13,7 @@
 - WAV download
 - Customizable buffer duration
 - Ring buffer
+- Chunked recordings
 
 ### Soundboard:
 

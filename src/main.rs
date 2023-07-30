@@ -77,6 +77,7 @@ const MAX_FILE_SIZE: usize = 24 * (1 << 20);
 const ROWS_PER_MESSAGE: usize = 5;
 const SOUNDS_PER_ROW: usize = 5;
 const AUTOCOMPLETE_MAX_CHOICES: usize = 25;
+const MAX_ATTACHEMENTS_PER_MESSAGE: usize = 10;
 
 /// Invalid Emoji error.
 const INVALID_EMOJI_CODE: isize = 50035;
@@ -173,6 +174,7 @@ impl Handler {
                 Some("join") => self.join_whitelist(ctx, command).await,
                 Some("leave") => self.leave_whitelist(ctx, command).await,
                 Some("download") => self.download_recording(ctx, command).await,
+                Some("download-chunks") => self.download_recording_chunks(ctx, command).await,
                 _ => (),
             },
 
@@ -474,6 +476,85 @@ impl Handler {
                             .interaction_response_data(|message| {
                                 message
                                     .content(format!("No voice data found for {}.", requested_user))
+                                    .allowed_mentions(|mentions| mentions.empty_parse())
+                            })
+                    })
+                    .await
+                    .expect("Download response failure");
+            }
+        }
+    }
+
+    async fn download_recording_chunks(
+        &self,
+        ctx: Context,
+        command: ApplicationCommandInteraction,
+    ) {
+        let Some(guild) = command.guild_id else {
+            return;
+        };
+        let Some(requested_user) = command::find_user_option(&command, "user", false) else {
+            return;
+        };
+        let Some(count) = command::find_integer_option(
+            &command,
+            "count",
+            false,
+            Some(MAX_ATTACHEMENTS_PER_MESSAGE as i64),
+        )
+        .map(|c| c as usize) else {
+            return;
+        };
+
+        let (tx, rx) = oneshot::channel::<Option<Vec<Vec<i16>>>>();
+        self.recorder
+            .lock()
+            .await
+            .get_guild_recorder(guild)
+            .await
+            .send(RecorderAction::GetVoiceDataChunks(
+                requested_user.id,
+                count,
+                tx,
+            ))
+            .expect("Download request failure");
+
+        let data = rx.await.expect("Voice data fetching error");
+        match data {
+            Some(data) => {
+                command.defer(&ctx).await.expect("Download defer failed");
+                let count = data.len();
+                for (group_index, chunks) in data.chunks(MAX_ATTACHEMENTS_PER_MESSAGE).enumerate() {
+                    command
+                        .create_followup_message(&ctx, |response| {
+                            response.add_files(chunks.into_iter().enumerate().map(|(i, chunk)| {
+                                AttachmentType::Bytes {
+                                    data: Cow::from(wav::package(&chunk)),
+                                    filename: if count > 1 {
+                                        format!(
+                                            "{}-{}.wav",
+                                            requested_user.name,
+                                            group_index * MAX_ATTACHEMENTS_PER_MESSAGE + i + 1
+                                        )
+                                    } else {
+                                        format!("{}.wav", requested_user.name)
+                                    },
+                                }
+                            }))
+                        })
+                        .await
+                        .expect("Voice data transmission failure");
+                }
+            }
+            None => {
+                command
+                    .create_interaction_response(&ctx, |response| {
+                        response
+                            .kind(InteractionResponseType::ChannelMessageWithSource)
+                            .interaction_response_data(|message| {
+                                message
+                                    .content(format!("No voice data found for {}.", requested_user))
+                                    .allowed_mentions(|mentions| mentions.empty_parse())
                             })
                     })
                     .await
@@ -1065,6 +1146,29 @@ impl Handler {
                                 .name("user")
                                 .description("User to download data for")
                                 .required(true)
+                        })
+                });
+
+                // Download recording chunks.
+                command.create_option(|subcommand| {
+                    subcommand
+                        .kind(CommandOptionType::SubCommand)
+                        .name("download-chunks")
+                        .description("Download a user's recording chunks")
+                        .create_sub_option(|option| {
+                            option
+                                .kind(CommandOptionType::User)
+                                .name("user")
+                                .description("User to download data for")
+                                .required(true)
+                        })
+                        .create_sub_option(|option| {
+                            option
+                                .kind(CommandOptionType::Integer)
+                                .name("count")
+                                .description("The maximum number of chunks to fetch")
+                                .required(false)
+                                .min_int_value(1)
                         })
                 })
             });
