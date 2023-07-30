@@ -386,6 +386,37 @@ impl Soundboard {
             .map_err(|_| SoundboardError::DeleteFailed)
     }
 
+    async fn change_sound_field<R, F: FnOnce(&mut Sound) -> (R, bool)>(
+        &self,
+        guild: GuildId,
+        name: &str,
+        group: Option<&str>,
+        f: F,
+    ) -> Result<R, SoundboardError> {
+        let name_regex = match_regex(name);
+        let group_regex = group.map(match_regex);
+
+        let mut sounds = self.sounds.lock().await;
+        let mut matching = sounds.values_mut().filter(|sound| {
+            sound.metadata.guild == guild.0
+                && name_regex.is_match(&sound.metadata.name)
+                && group_regex
+                    .as_ref()
+                    .map(|rg| rg.is_match(&sound.metadata.group))
+                    .unwrap_or(true)
+        });
+        let sound = matching.next().ok_or(SoundboardError::SoundNotFound)?;
+        if matching.next().is_some() {
+            return Err(SoundboardError::SoundNameAmbiguous);
+        }
+
+        let (res, overwrite) = f(sound);
+        if overwrite {
+            self.overwrite_metadata_file(&sounds).await?;
+        }
+        Ok(res)
+    }
+
     pub async fn change_color(
         &self,
         guild: GuildId,
@@ -393,32 +424,33 @@ impl Soundboard {
         group: Option<&str>,
         color: ButtonStyle,
     ) -> Result<bool, SoundboardError> {
-        let name_regex = match_regex(name);
-        let group_regex = group.map(match_regex);
+        self.change_sound_field(guild, name, group, |s| {
+            if s.metadata.color == color {
+                (false, false)
+            } else {
+                s.metadata.color = color;
+                (true, true)
+            }
+        })
+        .await
+    }
 
-        let mut sounds = self.sounds.lock().await;
-        let mut matching = sounds.iter().filter_map(|(id, sound)| {
-            (sound.metadata.guild == guild.0
-                && name_regex.is_match(&sound.metadata.name)
-                && group_regex
-                    .as_ref()
-                    .map(|rg| rg.is_match(&sound.metadata.group))
-                    .unwrap_or(true))
-            .then_some(*id)
-        });
-        let id = matching.next().ok_or(SoundboardError::SoundNotFound)?;
-        if matching.next().is_some() {
-            return Err(SoundboardError::SoundNameAmbiguous);
-        }
-
-        let sound = sounds.get_mut(&id).ok_or(SoundboardError::SoundNotFound)?;
-        if sound.metadata.color == color {
-            Ok(false)
-        } else {
-            sound.metadata.color = color;
-            self.overwrite_metadata_file(&sounds).await?;
-            Ok(true)
-        }
+    pub async fn change_emoji(
+        &self,
+        guild: GuildId,
+        name: &str,
+        group: Option<&str>,
+        emoji: String,
+    ) -> Result<bool, SoundboardError> {
+        self.change_sound_field(guild, name, group, |s| {
+            if s.metadata.emoji.as_ref() == Some(&emoji) {
+                (false, false)
+            } else {
+                s.metadata.emoji = Some(emoji);
+                (true, true)
+            }
+        })
+        .await
     }
 
     pub async fn get_id(

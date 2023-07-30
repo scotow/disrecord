@@ -183,6 +183,7 @@ impl Handler {
                 Some("download") => self.download_sound(ctx, command).await,
                 Some("delete") => self.delete_sound(ctx, command).await,
                 Some("change-color") => self.change_sound_color(ctx, command).await,
+                Some("change-emoji") => self.change_sound_emoji(ctx, command).await,
                 Some("id") => self.sound_id(ctx, command).await,
                 Some("backup") => self.backup_sounds(ctx, command).await,
                 Some("logs") => self.soundboard_logs(ctx, command).await,
@@ -237,7 +238,7 @@ impl Handler {
 
     async fn dispatch_autocomplete(&self, ctx: Context, autocomplete: AutocompleteInteraction) {
         let Some(guild) = autocomplete.guild_id else {
-            return
+            return;
         };
 
         let matches = match find_autocompleting(&autocomplete.data.options) {
@@ -291,7 +292,7 @@ impl Handler {
 
     async fn get_whitelist(&self, ctx: Context, command: ApplicationCommandInteraction) {
         let Some(guild) = command.guild_id else {
-            return
+            return;
         };
 
         let list = self
@@ -369,7 +370,7 @@ impl Handler {
 
     async fn join_channel(&self, ctx: Context, command: ApplicationCommandInteraction) {
         let Some(guild) = command.guild_id else {
-            return
+            return;
         };
         let channel = match find_voice_channel(&ctx, guild, command.user.id).await {
             Some(channel) => channel,
@@ -425,7 +426,7 @@ impl Handler {
 
     async fn download_recording(&self, ctx: Context, command: ApplicationCommandInteraction) {
         let Some(guild) = command.guild_id else {
-            return
+            return;
         };
         let Some(requested_user) = command::find_user_option(&command, "user", false) else {
             return;
@@ -740,7 +741,8 @@ impl Handler {
         };
         let group = command::find_string_option(&command, "group", false, None);
         let Some(color) = command::find_string_option(&command, "color", false, None)
-            .map(|color| button::parse_color(color)) else {
+            .map(|color| button::parse_color(color))
+        else {
             return;
         };
 
@@ -749,7 +751,7 @@ impl Handler {
             .change_color(guild, name, group, color)
             .await
         {
-            Ok(true) => "Sound color changed.".to_owned(),
+            Ok(true) => "Sound's color changed.".to_owned(),
             Ok(false) => "The sound already had this color.".to_owned(),
             Err(err) => err.to_string(),
         };
@@ -760,7 +762,38 @@ impl Handler {
                     .interaction_response_data(|message| message.content(text))
             })
             .await
-            .expect("Cannot send sound color change error message");
+            .expect("Cannot send sound's color change error message");
+    }
+
+    async fn change_sound_emoji(&self, ctx: Context, command: ApplicationCommandInteraction) {
+        let Some(guild) = command.guild_id else {
+            return;
+        };
+        let Some(name) = command::find_string_option(&command, "sound", false, None) else {
+            return;
+        };
+        let group = command::find_string_option(&command, "group", false, None);
+        let Some(emoji) = command::find_emoji_option(&command, "emoji", false) else {
+            return;
+        };
+
+        let text = match self
+            .soundboard
+            .change_emoji(guild, name, group, emoji)
+            .await
+        {
+            Ok(true) => "Sound's emoji changed.".to_owned(),
+            Ok(false) => "The sound already had this emoji.".to_owned(),
+            Err(err) => err.to_string(),
+        };
+        command
+            .create_interaction_response(&ctx, |response| {
+                response
+                    .kind(InteractionResponseType::ChannelMessageWithSource)
+                    .interaction_response_data(|message| message.content(text))
+            })
+            .await
+            .expect("Cannot send sound's emoji change error message");
     }
 
     async fn sound_id(&self, ctx: Context, command: ApplicationCommandInteraction) {
@@ -875,14 +908,17 @@ impl Handler {
             return;
         };
 
-        let Some(duration) = command::find_duration_option(&command, "duration", false, Some(Duration::from_secs(30))) else {
+        let Some(duration) = command::find_duration_option(
+            &command,
+            "duration",
+            false,
+            Some(Duration::from_secs(30)),
+        ) else {
             command
                 .create_interaction_response(&ctx, |response| {
                     response
                         .kind(InteractionResponseType::ChannelMessageWithSource)
-                        .interaction_response_data(|message| {
-                            message.content("Invalid duration.")
-                        })
+                        .interaction_response_data(|message| message.content("Invalid duration."))
                 })
                 .await
                 .expect("Logs response failure");
@@ -1189,6 +1225,37 @@ impl Handler {
                         })
                 });
 
+                // Change emoji.
+                command.create_option(|subcommand| {
+                    subcommand
+                        .kind(CommandOptionType::SubCommand)
+                        .name("change-emoji")
+                        .description("Change the emoji of a soundboard button")
+                        .create_sub_option(|option| {
+                            option
+                                .kind(CommandOptionType::String)
+                                .name("sound")
+                                .description("Sound name to change")
+                                .required(true)
+                                .set_autocomplete(true)
+                        })
+                        .create_sub_option(|option| {
+                            option
+                                .kind(CommandOptionType::String)
+                                .name("emoji")
+                                .description("New emoji of the button")
+                                .required(true)
+                        })
+                        .create_sub_option(|option| {
+                            option
+                                .kind(CommandOptionType::String)
+                                .name("group")
+                                .description("Group name of the sound to modify")
+                                .required(false)
+                                .set_autocomplete(true)
+                        })
+                });
+
                 // ID.
                 command.create_option(|subcommand| {
                     subcommand
@@ -1286,9 +1353,7 @@ async fn play_sound(
     guild: GuildId,
     sound: Ulid,
 ) -> bool {
-    let Some(mut data) = soundboard
-        .get_wav(sound)
-        .await else {
+    let Some(mut data) = soundboard.get_wav(sound).await else {
         return false;
     };
 
@@ -1328,7 +1393,7 @@ async fn play_random_sound_http(
     Path(guild): Path<GuildId>,
 ) -> StatusCode {
     let Some(sound) = soundboard.random_id(guild).await else {
-        return StatusCode::NOT_FOUND
+        return StatusCode::NOT_FOUND;
     };
     play_sound_http(State((songbird, soundboard)), Path((guild, sound))).await
 }
@@ -1338,7 +1403,7 @@ async fn play_latest_sound_http(
     Path(guild): Path<GuildId>,
 ) -> StatusCode {
     let Some(sound) = soundboard.latest_id(guild).await else {
-        return StatusCode::NOT_FOUND
+        return StatusCode::NOT_FOUND;
     };
     play_sound_http(State((songbird, soundboard)), Path((guild, sound))).await
 }
