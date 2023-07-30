@@ -563,7 +563,7 @@ impl Handler {
         };
         let emoji = command::find_emoji_option(&command, "emoji", false);
         let color = command::find_string_option(&command, "color", false, None)
-            .map(|color| button::parse_color(color))
+            .map(button::parse_color)
             .unwrap_or_else(|| button::determinist(&name.to_lowercase()));
         let index = command::find_integer_option(&command, "position", false, None)
             .map(|p| (p - 1) as usize);
@@ -740,8 +740,8 @@ impl Handler {
             return;
         };
         let group = command::find_string_option(&command, "group", false, None);
-        let Some(color) = command::find_string_option(&command, "color", false, None)
-            .map(|color| button::parse_color(color))
+        let Some(color) =
+            command::find_string_option(&command, "color", false, None).map(button::parse_color)
         else {
             return;
         };
@@ -982,7 +982,7 @@ impl Handler {
             return;
         }
 
-        let manager = songbird::get(&ctx)
+        let manager = songbird::get(ctx)
             .await
             .expect("Failed to get songbird manager");
         if let Some(call) = manager.get(channel.guild_id) {
