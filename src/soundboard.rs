@@ -376,6 +376,16 @@ impl Soundboard {
             .map_err(|_| SoundboardError::DeleteFailed)
     }
 
+    pub async fn delete_id(&self, guild: GuildId, id: Ulid) -> Result<(), SoundboardError> {
+        let mut sounds = self.sounds.lock().await;
+        let sound = sounds.remove(&id).ok_or(SoundboardError::SoundNotFound)?;
+        assert_eq!(sound.metadata.guild, guild.0);
+        self.overwrite_metadata_file(&sounds).await?;
+        fs::remove_file(sound.metadata.get_file_path(&self.sounds_dir_path))
+            .await
+            .map_err(|_| SoundboardError::DeleteFailed)
+    }
+
     pub async fn change_color(
         &self,
         guild: GuildId,

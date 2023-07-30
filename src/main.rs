@@ -20,10 +20,11 @@ use clap::Parser;
 use env_logger::Builder;
 use futures::{future, future::FutureExt};
 use itertools::Itertools;
-use log::{error, info};
+use log::{error, info, warn};
 use serenity::{
     async_trait,
     client::{Context, EventHandler},
+    http::error::Error,
     model::{
         application::{
             command::{Command, CommandOptionType, CommandType},
@@ -44,7 +45,7 @@ use serenity::{
         prelude::VoiceState,
     },
     prelude::GatewayIntents,
-    Client,
+    Client, Error as SerenityError,
 };
 use songbird::{
     driver::DecodeMode,
@@ -76,6 +77,10 @@ const MAX_FILE_SIZE: usize = 24 * (1 << 20);
 const ROWS_PER_MESSAGE: usize = 5;
 const SOUNDS_PER_ROW: usize = 5;
 const AUTOCOMPLETE_MAX_CHOICES: usize = 25;
+
+/// Invalid Emoji error.
+const INVALID_EMOJI_CODE: isize = 50035;
+const INVALID_EMOJI_MESSAGE: &str = "BUTTON_COMPONENT_INVALID_EMOJI";
 
 #[derive(Clone)]
 struct Handler {
@@ -576,7 +581,7 @@ impl Handler {
             .await
         {
             Ok(id) => {
-                command
+                match command
                     .create_interaction_response(&ctx, |response| {
                         response
                             .kind(InteractionResponseType::ChannelMessageWithSource)
@@ -598,7 +603,46 @@ impl Handler {
                             })
                     })
                     .await
-                    .expect("Failed to create sound button");
+                {
+                    Ok(()) => {}
+                    Err(err) => {
+                        // Try to catch invalid emoji error and rollback creation.
+                        self.soundboard
+                            .delete_id(guild, id)
+                            .await
+                            .expect("Failed to delete sound due to error");
+                        let err_msg = match err {
+                            SerenityError::Http(http_error) => match *http_error {
+                                Error::UnsuccessfulRequest(req) => {
+                                    if req.status_code == StatusCode::BAD_REQUEST
+                                        && req.error.code == INVALID_EMOJI_CODE
+                                        && req.error.errors.into_iter().any(|sub_error| {
+                                            sub_error.code == INVALID_EMOJI_MESSAGE
+                                        })
+                                    {
+                                        command
+                                            .create_interaction_response(&ctx, |response| {
+                                                response
+                                                    .kind(InteractionResponseType::ChannelMessageWithSource)
+                                                    .interaction_response_data(|message| message.content("Invalid emoji."))
+                                            })
+                                            .await
+                                            .expect("Cannot send sound creation emoji error");
+                                        "Uncaught invalid emoji".to_owned()
+                                    } else {
+                                        format!("Different status code: {}", req.error.code)
+                                    }
+                                }
+                                err => err.to_string(),
+                            },
+                            err => err.to_string(),
+                        };
+                        warn!(
+                            "unexpected error while sending sound button for the first time: {:?}",
+                            err_msg
+                        );
+                    }
+                }
             }
             Err(err) => {
                 command
