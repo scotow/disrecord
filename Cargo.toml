@@ -25,6 +25,3 @@ thiserror = "1.0.40"
 tokio = { version = "1.27.0", features = ["macros", "rt-multi-thread", "sync", "fs", "process"] }
 ulid = { version = "1.0.0", features = ["serde"] }
 zip = { version = "0.6.4", default_features = false }
-
-[dev-dependencies]
-rand = "0.8.5"
