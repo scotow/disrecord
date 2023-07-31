@@ -505,6 +505,22 @@ impl Handler {
         .map(|c| c as usize) else {
             return;
         };
+        let Some(min_duration) = command::find_duration_option(
+            &command,
+            "min-duration",
+            false,
+            Some(Duration::from_millis(500)),
+        ) else {
+            command
+                .create_interaction_response(&ctx, |response| {
+                    response
+                        .kind(InteractionResponseType::ChannelMessageWithSource)
+                        .interaction_response_data(|message| message.content("Invalid duration."))
+                })
+                .await
+                .expect("Recording chunks invalid duration response failure");
+            return;
+        };
 
         let (tx, rx) = oneshot::channel::<Option<Vec<Vec<i16>>>>();
         self.recorder
@@ -515,6 +531,7 @@ impl Handler {
             .send(RecorderAction::GetVoiceDataChunks(
                 requested_user.id,
                 count,
+                min_duration,
                 tx,
             ))
             .expect("Download request failure");
@@ -1166,9 +1183,16 @@ impl Handler {
                             option
                                 .kind(CommandOptionType::Integer)
                                 .name("count")
-                                .description("The maximum number of chunks to fetch")
+                                .description("Maximum number of chunks to fetch")
                                 .required(false)
                                 .min_int_value(1)
+                        })
+                        .create_sub_option(|option| {
+                            option
+                                .kind(CommandOptionType::String)
+                                .name("min-duration")
+                                .description("Minimum duration of chunks")
+                                .required(false)
                         })
                 })
             });

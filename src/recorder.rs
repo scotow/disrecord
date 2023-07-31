@@ -255,42 +255,45 @@ impl GuildRecorder {
                         );
                         tx.send(data).expect("Voice data send failed.");
                     }
-                    RecorderAction::GetVoiceDataChunks(user, len, tx) => {
+                    RecorderAction::GetVoiceDataChunks(user, len, min_duration, tx) => {
                         info!("fetching data for user {user}");
-                        let data =
-                            match self.voice_data.values().find_map(|user_data| {
-                                (user_data.id == user).then_some(&user_data.data)
-                            }) {
-                                Some(Some(data)) if !data.is_empty() => {
-                                    let data = data.into_iter().copied().collect_vec();
-                                    let mut chunks = data
-                                        .chunks(FREQUENCY / 50)
-                                        .rev()
-                                        .group_by(|c| c.iter().any(|&f| f != 0))
-                                        .into_iter()
-                                        .filter(|&(is_voice, _)| is_voice)
-                                        .map(|(_, frames)| {
-                                            frames
-                                                .into_iter()
-                                                .collect_vec()
-                                                .into_iter()
-                                                .rev()
-                                                .flatten()
-                                                .copied()
-                                                .collect_vec()
-                                        })
-                                        .filter(|chunk| chunk.len() >= FREQUENCY / 2)
-                                        .take(len)
-                                        .collect_vec();
-                                    if chunks.is_empty() {
-                                        None
-                                    } else {
-                                        chunks.reverse();
-                                        Some(chunks)
-                                    }
+                        let data = match self
+                            .voice_data
+                            .values()
+                            .find_map(|user_data| (user_data.id == user).then_some(&user_data.data))
+                        {
+                            Some(Some(data)) if !data.is_empty() => {
+                                let mut data = data.clone();
+                                data.make_contiguous().reverse();
+                                let data = Vec::from(data);
+
+                                let mut chunks = data
+                                    .chunks(FREQUENCY / 50)
+                                    .group_by(|c| c.iter().any(|&f| f != 0))
+                                    .into_iter()
+                                    .filter(|&(is_voice, _)| is_voice)
+                                    .filter_map(|(_, frames)| {
+                                        let mut chunk =
+                                            frames.into_iter().flatten().copied().collect_vec();
+                                        if chunk.len()
+                                            < min_duration.as_millis() as usize * FREQUENCY / 1000
+                                        {
+                                            return None;
+                                        }
+                                        chunk.reverse();
+                                        Some(chunk)
+                                    })
+                                    .take(len)
+                                    .collect_vec();
+                                if chunks.is_empty() {
+                                    None
+                                } else {
+                                    chunks.reverse();
+                                    Some(chunks)
                                 }
-                                _ => None,
-                            };
+                            }
+                            _ => None,
+                        };
                         info!(
                             "fetched {} voice chunks for user {user}",
                             data.as_ref().map(|d| d.len()).unwrap_or(0)
@@ -362,6 +365,11 @@ pub enum RecorderAction {
     MapUser(UserId, Ssrc),
     RegisterVoiceData(Ssrc, Vec<i16>),
     GetVoiceData(UserId, OneshotSender<Option<VecDeque<i16>>>),
-    GetVoiceDataChunks(UserId, usize, OneshotSender<Option<Vec<Vec<i16>>>>),
+    GetVoiceDataChunks(
+        UserId,
+        usize,
+        Duration,
+        OneshotSender<Option<Vec<Vec<i16>>>>,
+    ),
     CleanOld,
 }

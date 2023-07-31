@@ -97,7 +97,7 @@ pub fn find_duration_option(
     default: Option<Duration>,
 ) -> Option<Duration> {
     match find_string_option(command, name, top_level, None) {
-        Some(s) => humantime::parse_duration(s).ok(),
+        Some(s) => parse_duration::parse(s).ok(),
         None => default,
     }
 }
