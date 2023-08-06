@@ -118,8 +118,8 @@ impl Soundboard {
                 (sound.metadata.guild == guild.0 && regex.is_match(&sound.metadata.name))
                     .then(|| sound.metadata.name.clone())
             })
-            .unique()
             .sorted()
+            .dedup()
             .take(max)
             .collect()
     }
@@ -134,8 +134,8 @@ impl Soundboard {
                 (sound.metadata.guild == guild.0 && regex.is_match(&sound.metadata.group))
                     .then(|| sound.metadata.group.clone())
             })
-            .unique()
             .sorted()
+            .dedup()
             .take(max)
             .collect()
     }
