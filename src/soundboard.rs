@@ -417,6 +417,54 @@ impl Soundboard {
         Ok(res)
     }
 
+    pub async fn rename(
+        &self,
+        guild: GuildId,
+        name: &str,
+        group: Option<&str>,
+        new_name: String,
+    ) -> Result<bool, SoundboardError> {
+        // Check if it's the same name.
+        if name == new_name {
+            return Ok(false);
+        }
+
+        let mut sounds = self.sounds.lock().await;
+        let group_regex = group.map(match_regex);
+
+        // Check if a sound with the requested name already exists.
+        let new_name_regex = match_regex(&new_name);
+        if sounds.values().any(|sound| {
+            sound.metadata.guild == guild.0
+                && new_name_regex.is_match(&sound.metadata.name)
+                && group_regex
+                    .as_ref()
+                    .map(|rg| rg.is_match(&sound.metadata.group))
+                    .unwrap_or(true)
+        }) {
+            return Err(SoundboardError::NameTaken);
+        }
+
+        // Get sound metadata.
+        let name_regex = match_regex(name);
+        let mut matching = sounds.values_mut().filter(|sound| {
+            sound.metadata.guild == guild.0
+                && name_regex.is_match(&sound.metadata.name)
+                && group_regex
+                    .as_ref()
+                    .map(|rg| rg.is_match(&sound.metadata.group))
+                    .unwrap_or(true)
+        });
+        let sound = matching.next().ok_or(SoundboardError::SoundNotFound)?;
+        if matching.next().is_some() {
+            return Err(SoundboardError::SoundNameAmbiguous);
+        }
+
+        sound.metadata.name = new_name;
+        self.overwrite_metadata_file(&sounds).await?;
+        Ok(true)
+    }
+
     pub async fn change_color(
         &self,
         guild: GuildId,
