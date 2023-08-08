@@ -386,6 +386,124 @@ impl Soundboard {
             .map_err(|_| SoundboardError::DeleteFailed)
     }
 
+    pub async fn rename(
+        &self,
+        guild: GuildId,
+        name: &str,
+        group: Option<&str>,
+        new_name: String,
+    ) -> Result<bool, SoundboardError> {
+        let name_regex = match_regex(name);
+
+        // Check if it's the same name.
+        if name_regex.is_match(&new_name) {
+            return Ok(false);
+        }
+
+        let group_regex = group.map(match_regex);
+        let mut sounds = self.sounds.lock().await;
+
+        // Get sound id. We must resolve ambiguity first.
+        let mut matching = sounds.values().filter_map(|sound| {
+            (sound.metadata.guild == guild.0
+                && name_regex.is_match(&sound.metadata.name)
+                && group_regex
+                    .as_ref()
+                    .map(|rg| rg.is_match(&sound.metadata.group))
+                    .unwrap_or(true))
+            .then(|| (sound.metadata.id, sound.metadata.group.clone()))
+        });
+        let (id, group) = matching.next().ok_or(SoundboardError::SoundNotFound)?;
+        if matching.next().is_some() {
+            return Err(SoundboardError::SoundNameAmbiguous);
+        }
+
+        // Check if a sound with the requested name already exists.
+        let new_name_regex = match_regex(&new_name);
+        if sounds.values().any(|sound| {
+            sound.metadata.guild == guild.0
+                && new_name_regex.is_match(&sound.metadata.name)
+                && sound.metadata.group == group
+        }) {
+            return Err(SoundboardError::NameTaken);
+        }
+
+        sounds
+            .get_mut(&id)
+            .ok_or(SoundboardError::SoundNotFound)?
+            .metadata
+            .name = new_name;
+        self.overwrite_metadata_file(&sounds).await?;
+        Ok(true)
+    }
+
+    pub async fn move_group(
+        &self,
+        guild: GuildId,
+        name: &str,
+        group: Option<&str>,
+        mut new_group: String,
+    ) -> Result<bool, SoundboardError> {
+        let name_regex = match_regex(name);
+        let new_group_regex = match_regex(&new_group);
+        let mut sounds = self.sounds.lock().await;
+
+        // Check if the name is already taken in the target group.
+        if sounds.values().any(|sound| {
+            sound.metadata.guild == guild.0
+                && name_regex.is_match(&sound.metadata.name)
+                && new_group_regex.is_match(&sound.metadata.group)
+        }) {
+            return Err(SoundboardError::NameTaken);
+        }
+
+        // Find similar existing group.
+        new_group = sounds
+            .values()
+            .find_map(|sound| {
+                new_group_regex
+                    .is_match(&sound.metadata.group)
+                    .then(|| sound.metadata.group.clone())
+            })
+            .unwrap_or(new_group);
+
+        // Find new position.
+        let index = sounds
+            .values()
+            .filter_map(|s| {
+                (s.metadata.guild == guild.0 && s.metadata.group == new_group)
+                    .then_some(s.metadata.index)
+            })
+            .max()
+            .map(|i| i + 1)
+            .unwrap_or(0);
+
+        // Find requested sound to change.
+        let group_regex = group.map(match_regex);
+        let mut matching = sounds.values_mut().filter(|sound| {
+            sound.metadata.guild == guild.0
+                && name_regex.is_match(&sound.metadata.name)
+                && group_regex
+                    .as_ref()
+                    .map(|rg| rg.is_match(&sound.metadata.group))
+                    .unwrap_or(true)
+        });
+        let sound = matching.next().ok_or(SoundboardError::SoundNotFound)?;
+        if matching.next().is_some() {
+            return Err(SoundboardError::SoundNameAmbiguous);
+        }
+
+        // Check if old and new groups are the same.
+        if new_group_regex.is_match(&sound.metadata.group) {
+            return Ok(false);
+        }
+
+        sound.metadata.group = new_group;
+        sound.metadata.index = index;
+        self.overwrite_metadata_file(&sounds).await?;
+        Ok(true)
+    }
+
     async fn change_sound_field<R, F: FnOnce(&mut Sound) -> (R, bool)>(
         &self,
         guild: GuildId,
@@ -415,54 +533,6 @@ impl Soundboard {
             self.overwrite_metadata_file(&sounds).await?;
         }
         Ok(res)
-    }
-
-    pub async fn rename(
-        &self,
-        guild: GuildId,
-        name: &str,
-        group: Option<&str>,
-        new_name: String,
-    ) -> Result<bool, SoundboardError> {
-        // Check if it's the same name.
-        if name == new_name {
-            return Ok(false);
-        }
-
-        let mut sounds = self.sounds.lock().await;
-        let group_regex = group.map(match_regex);
-
-        // Check if a sound with the requested name already exists.
-        let new_name_regex = match_regex(&new_name);
-        if sounds.values().any(|sound| {
-            sound.metadata.guild == guild.0
-                && new_name_regex.is_match(&sound.metadata.name)
-                && group_regex
-                    .as_ref()
-                    .map(|rg| rg.is_match(&sound.metadata.group))
-                    .unwrap_or(true)
-        }) {
-            return Err(SoundboardError::NameTaken);
-        }
-
-        // Get sound metadata.
-        let name_regex = match_regex(name);
-        let mut matching = sounds.values_mut().filter(|sound| {
-            sound.metadata.guild == guild.0
-                && name_regex.is_match(&sound.metadata.name)
-                && group_regex
-                    .as_ref()
-                    .map(|rg| rg.is_match(&sound.metadata.group))
-                    .unwrap_or(true)
-        });
-        let sound = matching.next().ok_or(SoundboardError::SoundNotFound)?;
-        if matching.next().is_some() {
-            return Err(SoundboardError::SoundNameAmbiguous);
-        }
-
-        sound.metadata.name = new_name;
-        self.overwrite_metadata_file(&sounds).await?;
-        Ok(true)
     }
 
     pub async fn change_color(

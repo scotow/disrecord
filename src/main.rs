@@ -185,6 +185,7 @@ impl Handler {
                 Some("download") => self.download_sound(ctx, command).await,
                 Some("delete") => self.delete_sound(ctx, command).await,
                 Some("rename") => self.rename_sound(ctx, command).await,
+                Some("move") => self.move_sound(ctx, command).await,
                 Some("change-color") => self.change_sound_color(ctx, command).await,
                 Some("change-emoji") => self.change_sound_emoji(ctx, command).await,
                 Some("id") => self.sound_id(ctx, command).await,
@@ -862,6 +863,37 @@ impl Handler {
             .expect("Cannot send sound's name change error message");
     }
 
+    async fn move_sound(&self, ctx: Context, command: ApplicationCommandInteraction) {
+        let Some(guild) = command.guild_id else {
+            return;
+        };
+        let Some(name) = command::find_string_option(&command, "sound", false, None) else {
+            return;
+        };
+        let Some(new_name) = command::find_string_option(&command, "new-group", false, None) else {
+            return;
+        };
+        let group = command::find_string_option(&command, "group", false, None);
+
+        let text = match self
+            .soundboard
+            .move_group(guild, name, group, new_name.to_owned())
+            .await
+        {
+            Ok(true) => "Sound's group changed.".to_owned(),
+            Ok(false) => "This sound already was in this group.".to_owned(),
+            Err(err) => err.to_string(),
+        };
+        command
+            .create_interaction_response(&ctx, |response| {
+                response
+                    .kind(InteractionResponseType::ChannelMessageWithSource)
+                    .interaction_response_data(|message| message.content(text))
+            })
+            .await
+            .expect("Cannot send sound's group change error message");
+    }
+
     async fn change_sound_color(&self, ctx: Context, command: ApplicationCommandInteraction) {
         let Some(guild) = command.guild_id else {
             return;
@@ -882,7 +914,7 @@ impl Handler {
             .await
         {
             Ok(true) => "Sound's color changed.".to_owned(),
-            Ok(false) => "The sound already had this color.".to_owned(),
+            Ok(false) => "This sound already had this color.".to_owned(),
             Err(err) => err.to_string(),
         };
         command
@@ -913,7 +945,7 @@ impl Handler {
             .await
         {
             Ok(true) => "Sound's emoji changed.".to_owned(),
-            Ok(false) => "The sound already had this emoji.".to_owned(),
+            Ok(false) => "This sound already had this emoji.".to_owned(),
             Err(err) => err.to_string(),
         };
         command
@@ -1370,6 +1402,38 @@ impl Handler {
                                 .name("new-name")
                                 .description("New name of the button")
                                 .required(true)
+                        })
+                        .create_sub_option(|option| {
+                            option
+                                .kind(CommandOptionType::String)
+                                .name("group")
+                                .description("Group name of the sound to modify")
+                                .required(false)
+                                .set_autocomplete(true)
+                        })
+                });
+
+                // Move.
+                command.create_option(|subcommand| {
+                    subcommand
+                        .kind(CommandOptionType::SubCommand)
+                        .name("move")
+                        .description("Change the group of a soundboard button")
+                        .create_sub_option(|option| {
+                            option
+                                .kind(CommandOptionType::String)
+                                .name("sound")
+                                .description("Sound name to change")
+                                .required(true)
+                                .set_autocomplete(true)
+                        })
+                        .create_sub_option(|option| {
+                            option
+                                .kind(CommandOptionType::String)
+                                .name("new-group")
+                                .description("New group of the button")
+                                .required(true)
+                                .set_autocomplete(true)
                         })
                         .create_sub_option(|option| {
                             option
