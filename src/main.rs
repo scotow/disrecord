@@ -1731,10 +1731,14 @@ async fn main() -> ExitCode {
             .into_make_service(),
     );
 
-    info!("disrecord bot started");
-    error!(
-        "bot starting error: {:?}",
-        tokio::join!(client.start(), server)
-    );
+    info!("starting disrecord bot");
+    tokio::select! {
+        err = client.start() => {
+            error!("bot starting error: {}", err.unwrap_err());
+        },
+        err = server => {
+            error!("http endpoint error: {}", err.unwrap_err());
+        }
+    };
     ExitCode::FAILURE
 }
