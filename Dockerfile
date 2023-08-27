@@ -9,7 +9,7 @@ RUN LIBOPUS_STATIC=1 cargo build --release
 
 #------------
 
-FROM debian:bullseye-slim
+FROM debian:bookworm-slim
 
 COPY --from=mwader/static-ffmpeg:6.0 /ffmpeg /usr/local/bin/
 COPY --from=builder /app/target/release/disrecord /disrecord
