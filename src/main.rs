@@ -220,7 +220,7 @@ impl Handler {
 
         if let Some(history) = self
             .history
-            .register(guild, component.channel_id, component.user.id)
+            .register(guild, component.channel_id, component.user.id, sound)
             .await
         {
             let topic = future::join_all(history.into_iter().map(|(user, n)| {
@@ -1633,7 +1633,7 @@ async fn play_sound(
 }
 
 async fn play_sound_http(
-    State((songbird, soundboard)): State<(Arc<Songbird>, Arc<Soundboard>)>,
+    State((songbird, soundboard, _history)): State<(Arc<Songbird>, Arc<Soundboard>, Arc<History>)>,
     Path((guild, sound)): Path<(GuildId, Ulid)>,
 ) -> StatusCode {
     if play_sound(songbird, &soundboard, guild, sound).await {
@@ -1644,23 +1644,43 @@ async fn play_sound_http(
 }
 
 async fn play_random_sound_http(
-    State((songbird, soundboard)): State<(Arc<Songbird>, Arc<Soundboard>)>,
+    State((songbird, soundboard, history)): State<(Arc<Songbird>, Arc<Soundboard>, Arc<History>)>,
     Path(guild): Path<GuildId>,
 ) -> StatusCode {
     let Some(sound) = soundboard.random_id(guild).await else {
         return StatusCode::NOT_FOUND;
     };
-    play_sound_http(State((songbird, soundboard)), Path((guild, sound))).await
+    play_sound_http(State((songbird, soundboard, history)), Path((guild, sound))).await
 }
 
 async fn play_latest_sound_http(
-    State((songbird, soundboard)): State<(Arc<Songbird>, Arc<Soundboard>)>,
+    State((songbird, soundboard, history)): State<(Arc<Songbird>, Arc<Soundboard>, Arc<History>)>,
     Path(guild): Path<GuildId>,
 ) -> StatusCode {
     let Some(sound) = soundboard.latest_id(guild).await else {
         return StatusCode::NOT_FOUND;
     };
-    play_sound_http(State((songbird, soundboard)), Path((guild, sound))).await
+    play_sound_http(State((songbird, soundboard, history)), Path((guild, sound))).await
+}
+
+async fn play_last_played_sound_http(
+    State((songbird, soundboard, history)): State<(Arc<Songbird>, Arc<Soundboard>, Arc<History>)>,
+    Path(guild): Path<GuildId>,
+) -> StatusCode {
+    let Some(sound) = history.get_latest_played(guild, 0).await else {
+        return StatusCode::NOT_FOUND;
+    };
+    play_sound_http(State((songbird, soundboard, history)), Path((guild, sound))).await
+}
+
+async fn play_last_played_offset_sound_http(
+    State((songbird, soundboard, history)): State<(Arc<Songbird>, Arc<Soundboard>, Arc<History>)>,
+    Path((guild, offset)): Path<(GuildId, usize)>,
+) -> StatusCode {
+    let Some(sound) = history.get_latest_played(guild, offset).await else {
+        return StatusCode::NOT_FOUND;
+    };
+    play_sound_http(State((songbird, soundboard, history)), Path((guild, sound))).await
 }
 
 #[tokio::main]
@@ -1694,7 +1714,9 @@ async fn main() -> ExitCode {
     );
     Arc::clone(&soundboard).cache_loop();
 
-    let intents = GatewayIntents::all();
+    let history = Arc::new(History::default());
+
+    let intents = GatewayIntents::GUILDS | GatewayIntents::GUILD_VOICE_STATES;
     let songbird =
         Songbird::serenity_from_config(songbird::Config::default().decode_mode(DecodeMode::Decode));
     let mut client = Client::builder(options.discord_token, intents)
@@ -1703,7 +1725,7 @@ async fn main() -> ExitCode {
             allow_delete: !options.disable_delete,
             recorder,
             soundboard: Arc::clone(&soundboard),
-            history: Arc::new(History::default()),
+            history: Arc::clone(&history),
         })
         .register_songbird_with(Arc::clone(&songbird))
         .await
@@ -1727,7 +1749,15 @@ async fn main() -> ExitCode {
                 "/guilds/:guild/sounds/latest/play",
                 routing::post(play_latest_sound_http),
             )
-            .with_state((songbird, soundboard))
+            .route(
+                "/guilds/:guild/sounds/last-played/play",
+                routing::post(play_last_played_sound_http),
+            )
+            .route(
+                "/guilds/:guild/sounds/last-played/:offset/play",
+                routing::post(play_last_played_offset_sound_http),
+            )
+            .with_state((songbird, soundboard, history))
             .into_make_service(),
     );
 

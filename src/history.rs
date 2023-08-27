@@ -8,6 +8,7 @@ use std::{
 use itertools::Itertools;
 use serenity::model::id::{ChannelId, GuildId, UserId};
 use tokio::{sync::Mutex, time::sleep};
+use ulid::Ulid;
 
 const CHANNEL_TOPIC_EDIT_RATE_LIMIT: Duration = Duration::from_secs(5 * 60);
 const LOGS_DURATION: Duration = Duration::from_secs(5 * 60);
@@ -25,13 +26,14 @@ impl History {
         guild: GuildId,
         channel: ChannelId,
         user: UserId,
+        sound: Ulid,
     ) -> Option<Vec<(UserId, u32)>> {
         self.guild_counters
             .lock()
             .await
             .entry(guild)
             .or_default()
-            .register(user);
+            .register(user, sound);
 
         let channel_history = self
             .channel_counters
@@ -71,15 +73,23 @@ impl History {
                 .logs_counters(duration),
         ))
     }
+
+    pub async fn get_latest_played(&self, guild: GuildId, offset: usize) -> Option<Ulid> {
+        self.guild_counters
+            .lock()
+            .await
+            .get(&guild)?
+            .last_played_sound(offset)
+    }
 }
 
 #[derive(Default)]
 struct GuildHistory {
-    logs: VecDeque<(UserId, Instant)>,
+    logs: VecDeque<(UserId, Instant, Ulid)>,
 }
 
 impl GuildHistory {
-    fn register(&mut self, user: UserId) {
+    fn register(&mut self, user: UserId, sound: Ulid) {
         // Clear old logs.
         loop {
             match self.logs.front() {
@@ -90,20 +100,30 @@ impl GuildHistory {
             }
         }
         // Append log.
-        self.logs.push_back((user, Instant::now()));
+        self.logs.push_back((user, Instant::now(), sound));
     }
 
     fn logs_counters(&self, duration: Duration) -> Vec<(UserId, u32)> {
         self.logs
             .iter()
             .rev()
-            .take_while(|(_user, ts)| ts.elapsed() <= duration)
-            .map(|(user, _ts)| *user)
+            .take_while(|(_user, ts, _sound)| ts.elapsed() <= duration)
+            .map(|(user, _ts, _sound)| *user)
             .counts()
             .into_iter()
             .sorted_by(|(_u1, c1), (_u2, c2)| c1.cmp(c2).reverse())
             .map(|(user, count)| (user, count as u32))
             .collect()
+    }
+
+    fn last_played_sound(&self, offset: usize) -> Option<Ulid> {
+        self.logs
+            .iter()
+            .rev()
+            .map(|(_user, _ts, sound)| sound)
+            .unique()
+            .nth(offset)
+            .cloned()
     }
 }
 
