@@ -155,7 +155,6 @@ impl VoiceEventHandler for VoiceHandler {
             }
             _ => {}
         }
-
         None
     }
 }
@@ -165,7 +164,6 @@ impl Handler {
         match command.data.name.as_str() {
             // Common.
             "version" => self.version(ctx, command).await,
-            "help" => self.help(ctx, command).await,
             "join" => self.join_channel(ctx, command).await,
 
             // Recorder.
@@ -279,19 +277,6 @@ impl Handler {
             })
             .await
             .expect("Version response failure");
-    }
-
-    async fn help(&self, ctx: Context, command: ApplicationCommandInteraction) {
-        command
-            .create_interaction_response(&ctx, |response| {
-                response
-                    .kind(InteractionResponseType::ChannelMessageWithSource)
-                    .interaction_response_data(|message| {
-                        message.content("Use **Audacity** to load and cut parts of the recordings. Expected format is WAV, mono / 48kHZ / 16bit signed")
-                    })
-            })
-            .await
-            .expect("Help response failure");
     }
 
     async fn get_whitelist(&self, ctx: Context, command: ApplicationCommandInteraction) {
@@ -1165,15 +1150,7 @@ impl Handler {
                 command
                     .kind(CommandType::ChatInput)
                     .name("version")
-                    .description("Display help")
-            });
-
-            // Help.
-            builder.create_application_command(|command| {
-                command
-                    .kind(CommandType::ChatInput)
-                    .name("help")
-                    .description("Display help")
+                    .description("Display version")
             });
 
             // Join voice channel.
