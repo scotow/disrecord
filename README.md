@@ -27,6 +27,34 @@
 
 ![Soundboard](soundboard.png)
 
+### HTTP endpoints
+
+Some actions can also be trigger using HTTP calls to allow scripting:
+
+```
+# Join a voice channel:
+/guilds/:guild/channels/:channel/join
+
+# Join the same voice channel of a user:
+/guilds/:guild/users/:user/follow
+
+# Play a specific sound:
+/guilds/:guild/sounds/:sound/play
+
+# Play a random sound from the soundboard:
+/guilds/:guild/sounds/random/play
+
+# Play the latest added sound to the soundboard:
+/guilds/:guild/sounds/latest/play
+
+# Play the last played sound (using buttons) from the soundboard:
+/guilds/:guild/sounds/last-played/play
+
+# Play the nth last played sound (using buttons) from the soundboard:
+/guilds/:guild/sounds/last-played/:offset/play
+```
+
+
 ## Configuration
 
 ### Options

@@ -12,7 +12,7 @@ use std::{
 };
 
 use axum::{
-    extract::{Path, State},
+    extract::{FromRef, Path, State},
     http::StatusCode,
     routing, Router, Server,
 };
@@ -23,8 +23,9 @@ use itertools::Itertools;
 use log::{error, info, warn};
 use serenity::{
     async_trait,
+    cache::Cache,
     client::{Context, EventHandler},
-    http::error::Error,
+    http::{error::Error, Http},
     model::{
         application::{
             command::{Command, CommandOptionType, CommandType},
@@ -45,7 +46,7 @@ use serenity::{
         prelude::VoiceState,
     },
     prelude::GatewayIntents,
-    Client, Error as SerenityError,
+    CacheAndHttp, Client, Error as SerenityError,
 };
 use songbird::{
     driver::DecodeMode,
@@ -164,7 +165,7 @@ impl Handler {
         match command.data.name.as_str() {
             // Common.
             "version" => self.version(ctx, command).await,
-            "join" => self.join_channel(ctx, command).await,
+            "join" => self.join_voice(ctx, command).await,
 
             // Recorder.
             "recorder" => match parse_subcommand(&command) {
@@ -357,7 +358,7 @@ impl Handler {
             .expect("Leaving whitelist failed");
     }
 
-    async fn join_channel(&self, ctx: Context, command: ApplicationCommandInteraction) {
+    async fn join_voice(&self, ctx: Context, command: ApplicationCommandInteraction) {
         let Some(guild) = command.guild_id else {
             return;
         };
@@ -373,7 +374,7 @@ impl Handler {
                             })
                     })
                     .await
-                    .expect("Cannot find voice channel");
+                    .expect("Cannot send voice channel not found message");
                 return;
             }
         };
@@ -1542,15 +1543,19 @@ impl Handler {
     }
 }
 
-async fn find_voice_channel(ctx: &Context, guild: GuildId, user: UserId) -> Option<ChannelId> {
+async fn find_voice_channel<HC: AsRef<Http> + AsRef<Cache>>(
+    hc: HC,
+    guild: GuildId,
+    user: UserId,
+) -> Option<ChannelId> {
     for (id, channel) in guild
-        .channels(&ctx.http)
+        .channels(&hc)
         .await
         .expect("Failed to fetch channels list")
     {
         if channel.kind == ChannelType::Voice {
             let members = channel
-                .members(ctx)
+                .members(&hc)
                 .await
                 .expect("Failed to fetch channel members");
             if members.iter().any(|m| m.user.id == user) {
@@ -1609,8 +1614,58 @@ async fn play_sound(
     true
 }
 
+#[derive(FromRef, Clone)]
+struct HttpState {
+    http_cache: Arc<CacheAndHttp>,
+    songbird: Arc<Songbird>,
+    recorder: Arc<Mutex<Recorder>>,
+    soundboard: Arc<Soundboard>,
+    history: Arc<History>,
+}
+
+async fn join_channel_http(
+    State(songbird): State<Arc<Songbird>>,
+    State(recorder): State<Arc<Mutex<Recorder>>>,
+    Path((guild, channel)): Path<(GuildId, ChannelId)>,
+) -> StatusCode {
+    let call = songbird.get_or_insert(guild);
+    let mut call_lock = call.lock().await;
+
+    let recorder = VoiceHandler {
+        guild_recorder: recorder.lock().await.get_guild_recorder(guild).await,
+    };
+    call_lock.remove_all_global_events();
+    call_lock.add_global_event(
+        Event::Core(CoreEvent::SpeakingStateUpdate),
+        recorder.clone(),
+    );
+    call_lock.add_global_event(Event::Core(CoreEvent::VoicePacket), recorder);
+
+    let handle = call_lock
+        .join(channel)
+        .await
+        .expect("Voice connexion failure");
+    drop(call_lock);
+    handle.await.expect("Voice connexion failure");
+
+    StatusCode::OK
+}
+
+async fn join_channel_user_http(
+    State(http_cache): State<Arc<CacheAndHttp>>,
+    State(songbird): State<Arc<Songbird>>,
+    State(recorder): State<Arc<Mutex<Recorder>>>,
+    Path((guild, user)): Path<(GuildId, UserId)>,
+) -> StatusCode {
+    let Some(channel) = find_voice_channel(http_cache.as_ref(), guild, user).await else {
+        return StatusCode::NOT_FOUND;
+    };
+    join_channel_http(State(songbird), State(recorder), Path((guild, channel))).await
+}
+
 async fn play_sound_http(
-    State((songbird, soundboard, _history)): State<(Arc<Songbird>, Arc<Soundboard>, Arc<History>)>,
+    State(songbird): State<Arc<Songbird>>,
+    State(soundboard): State<Arc<Soundboard>>,
     Path((guild, sound)): Path<(GuildId, Ulid)>,
 ) -> StatusCode {
     if play_sound(songbird, &soundboard, guild, sound).await {
@@ -1621,43 +1676,49 @@ async fn play_sound_http(
 }
 
 async fn play_random_sound_http(
-    State((songbird, soundboard, history)): State<(Arc<Songbird>, Arc<Soundboard>, Arc<History>)>,
+    State(songbird): State<Arc<Songbird>>,
+    State(soundboard): State<Arc<Soundboard>>,
     Path(guild): Path<GuildId>,
 ) -> StatusCode {
     let Some(sound) = soundboard.random_id(guild).await else {
         return StatusCode::NOT_FOUND;
     };
-    play_sound_http(State((songbird, soundboard, history)), Path((guild, sound))).await
+    play_sound_http(State(songbird), State(soundboard), Path((guild, sound))).await
 }
 
 async fn play_latest_sound_http(
-    State((songbird, soundboard, history)): State<(Arc<Songbird>, Arc<Soundboard>, Arc<History>)>,
+    State(songbird): State<Arc<Songbird>>,
+    State(soundboard): State<Arc<Soundboard>>,
     Path(guild): Path<GuildId>,
 ) -> StatusCode {
     let Some(sound) = soundboard.latest_id(guild).await else {
         return StatusCode::NOT_FOUND;
     };
-    play_sound_http(State((songbird, soundboard, history)), Path((guild, sound))).await
+    play_sound_http(State(songbird), State(soundboard), Path((guild, sound))).await
 }
 
 async fn play_last_played_sound_http(
-    State((songbird, soundboard, history)): State<(Arc<Songbird>, Arc<Soundboard>, Arc<History>)>,
+    State(songbird): State<Arc<Songbird>>,
+    State(soundboard): State<Arc<Soundboard>>,
+    State(history): State<Arc<History>>,
     Path(guild): Path<GuildId>,
 ) -> StatusCode {
     let Some(sound) = history.get_latest_played(guild, 0).await else {
         return StatusCode::NOT_FOUND;
     };
-    play_sound_http(State((songbird, soundboard, history)), Path((guild, sound))).await
+    play_sound_http(State(songbird), State(soundboard), Path((guild, sound))).await
 }
 
 async fn play_last_played_offset_sound_http(
-    State((songbird, soundboard, history)): State<(Arc<Songbird>, Arc<Soundboard>, Arc<History>)>,
+    State(songbird): State<Arc<Songbird>>,
+    State(soundboard): State<Arc<Soundboard>>,
+    State(history): State<Arc<History>>,
     Path((guild, offset)): Path<(GuildId, usize)>,
 ) -> StatusCode {
     let Some(sound) = history.get_latest_played(guild, offset).await else {
         return StatusCode::NOT_FOUND;
     };
-    play_sound_http(State((songbird, soundboard, history)), Path((guild, sound))).await
+    play_sound_http(State(songbird), State(soundboard), Path((guild, sound))).await
 }
 
 #[tokio::main]
@@ -1700,7 +1761,7 @@ async fn main() -> ExitCode {
         .event_handler(Handler {
             bot_id: Arc::new(AtomicU64::new(0)),
             allow_delete: !options.disable_delete,
-            recorder,
+            recorder: Arc::clone(&recorder),
             soundboard: Arc::clone(&soundboard),
             history: Arc::clone(&history),
         })
@@ -1714,6 +1775,14 @@ async fn main() -> ExitCode {
     ))
     .serve(
         Router::new()
+            .route(
+                "/guilds/:guild/channels/:channel/join",
+                routing::post(join_channel_http),
+            )
+            .route(
+                "/guilds/:guild/users/:user/follow",
+                routing::post(join_channel_user_http),
+            )
             .route(
                 "/guilds/:guild/sounds/:sound/play",
                 routing::post(play_sound_http),
@@ -1734,7 +1803,13 @@ async fn main() -> ExitCode {
                 "/guilds/:guild/sounds/last-played/:offset/play",
                 routing::post(play_last_played_offset_sound_http),
             )
-            .with_state((songbird, soundboard, history))
+            .with_state(HttpState {
+                http_cache: Arc::clone(&client.cache_and_http),
+                songbird,
+                recorder,
+                soundboard,
+                history,
+            })
             .into_make_service(),
     );
 
@@ -1746,6 +1821,6 @@ async fn main() -> ExitCode {
         err = server => {
             error!("http endpoint error: {}", err.unwrap_err());
         }
-    };
+    }
     ExitCode::FAILURE
 }
