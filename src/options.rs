@@ -49,6 +49,8 @@ pub struct Options {
     pub ffmpeg_path: PathBuf,
     #[arg(short = 'r', long)]
     pub disable_delete: bool,
+    #[arg(short = 'g', long)]
+    pub allow_grey: bool,
     #[arg(short = 'a', long, default_value("127.0.0.1"))]
     pub soundboard_http_address: IpAddr,
     #[arg(short = 'p', long, default_value("8080"))]

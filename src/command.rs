@@ -52,6 +52,19 @@ pub fn find_integer_option(
     }
 }
 
+pub fn find_boolean_option(
+    command: &ApplicationCommandInteraction,
+    name: &str,
+    top_level: bool,
+    default: Option<bool>,
+) -> Option<bool> {
+    match find_option(command, name, top_level) {
+        Some(CommandDataOptionValue::Boolean(b)) => Some(*b),
+        Some(_) => None,
+        None => default,
+    }
+}
+
 pub fn find_user_option<'a>(
     command: &'a ApplicationCommandInteraction,
     name: &str,

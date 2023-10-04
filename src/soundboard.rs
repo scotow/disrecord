@@ -1,6 +1,7 @@
 use std::{
-    collections::HashMap,
+    collections::{hash_map::DefaultHasher, HashMap},
     ffi::OsStr,
+    hash::{Hash, Hasher},
     path::{Path, PathBuf},
     process::Stdio,
     sync::Arc,
@@ -604,6 +605,22 @@ impl Soundboard {
             .await
             .values()
             .filter_map(|sound| (sound.metadata.guild == guild.0).then_some(sound.metadata.id))
+            .choose(&mut rand::thread_rng())
+    }
+
+    pub async fn random_id_in_group(&self, guild: GuildId, group_hash: u64) -> Option<Ulid> {
+        self.sounds
+            .lock()
+            .await
+            .values()
+            .filter_map(|sound| {
+                if sound.metadata.guild != guild.0 {
+                    return None;
+                }
+                let mut hasher = DefaultHasher::new();
+                sound.metadata.group.hash(&mut hasher);
+                (hasher.finish() == group_hash).then_some(sound.metadata.id)
+            })
             .choose(&mut rand::thread_rng())
     }
 

@@ -74,6 +74,7 @@ Options:
   -c, --sound-cache-duration <SOUND_CACHE_DURATION>          [default: 3m]
   -f, --ffmpeg-path <FFMPEG_PATH>                            [default: ffmpeg]
   -r, --disable-delete
+  -g, --allow-grey 
   -a, --soundboard-http-address <SOUNDBOARD_HTTP_ADDRESS>    [default: 127.0.0.1]
   -p, --soundboard-http-port <SOUNDBOARD_HTTP_PORT>          [default: 8080]
   -h, --help                                                 Print help

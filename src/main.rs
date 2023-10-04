@@ -58,6 +58,7 @@ use ulid::Ulid;
 use zip::{write::FileOptions as ZipFileOptions, ZipWriter};
 
 use crate::{
+    button::SoundButton,
     history::History,
     options::Options,
     recorder::{Recorder, RecorderAction},
@@ -88,6 +89,7 @@ const INVALID_EMOJI_MESSAGE: &str = "BUTTON_COMPONENT_INVALID_EMOJI";
 struct Handler {
     bot_id: Arc<AtomicU64>,
     allow_delete: bool,
+    allow_grey: bool,
     recorder: Arc<Mutex<Recorder>>,
     soundboard: Arc<Soundboard>,
     history: Arc<History>,
@@ -201,9 +203,36 @@ impl Handler {
             return;
         };
 
-        let Ok(sound) = Ulid::from_string(&component.data.custom_id) else {
-            return;
+        let sound = if component.data.custom_id.starts_with("random-") {
+            let Ok(hash) = component
+                .data
+                .custom_id
+                .trim_start_matches("random-")
+                .parse()
+            else {
+                return;
+            };
+            let Some(sound) = self.soundboard.random_id_in_group(guild, hash).await else {
+                return;
+            };
+            sound
+        } else if component.data.custom_id == "random" {
+            let Some(sound) = self.soundboard.random_id(guild).await else {
+                return;
+            };
+            sound
+        } else if component.data.custom_id == "latest" {
+            let Some(sound) = self.soundboard.latest_id(guild).await else {
+                return;
+            };
+            sound
+        } else {
+            let Ok(sound) = Ulid::from_string(&component.data.custom_id) else {
+                return;
+            };
+            sound
         };
+
         let manager = songbird::get(&ctx)
             .await
             .expect("Failed to get songbird manager");
@@ -573,6 +602,15 @@ impl Handler {
             return;
         };
 
+        let Some(add_random) = command::find_boolean_option(&command, "random", false, Some(true))
+        else {
+            return;
+        };
+        let Some(add_latest) = command::find_boolean_option(&command, "latest", false, Some(true))
+        else {
+            return;
+        };
+
         let sounds = self.soundboard.list(guild).await;
         if sounds.is_empty() {
             command
@@ -588,6 +626,38 @@ impl Handler {
             return;
         }
 
+        let mut sounds = sounds
+            .into_iter()
+            .map(|(g, sounds)| {
+                (
+                    g,
+                    sounds
+                        .into_iter()
+                        .map(|s| SoundButton::Sound(s))
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .collect::<Vec<_>>();
+
+        // Add random and latest buttons.
+        let total_sounds = sounds
+            .iter()
+            .map(|(_g, sounds)| sounds.len())
+            .sum::<usize>();
+        let mut has_shortcuts_row = false;
+        if add_random && total_sounds >= 2 {
+            has_shortcuts_row = true;
+            sounds.push(("Shortcuts".to_owned(), vec![SoundButton::Random(None)]))
+        }
+        if add_latest && total_sounds >= 2 {
+            if has_shortcuts_row {
+                sounds.last_mut().unwrap().1.push(SoundButton::Latest);
+            } else {
+                has_shortcuts_row = true;
+                sounds.push(("Shortcuts".to_owned(), vec![SoundButton::Latest]));
+            }
+        }
+
         command
             .defer(&ctx)
             .await
@@ -596,7 +666,14 @@ impl Handler {
             .delete_original_interaction_response(&ctx)
             .await
             .expect("Failed to delete original sound list interaction");
-        for (group, sounds) in sounds {
+
+        let groups_len = sounds.len();
+        for (i, (group, mut sounds)) in sounds.into_iter().enumerate() {
+            // Add random button if enough sounds in group.
+            if add_random && sounds.len() >= 2 && (has_shortcuts_row && i != groups_len - 1) {
+                sounds.insert(0, SoundButton::Random(Some(group.clone())));
+            }
+
             // Send the group name once then at most 5 sound rows per message.
             for (message_index, sounds_message) in
                 sounds.chunks(ROWS_PER_MESSAGE * SOUNDS_PER_ROW).enumerate()
@@ -611,16 +688,7 @@ impl Handler {
                             for sounds_row in sounds_message.chunks(SOUNDS_PER_ROW) {
                                 components.create_action_row(|row| {
                                     for sound in sounds_row {
-                                        row.create_button(|button| {
-                                            button
-                                                .custom_id(sound.id.to_string())
-                                                .style(sound.color)
-                                                .label(&sound.name);
-                                            if let Some(emoji) = &sound.emoji {
-                                                button.emoji(ReactionType::Unicode(emoji.clone()));
-                                            }
-                                            button
-                                        });
+                                        row.create_button(|button| sound.apply(button));
                                     }
                                     row
                                 });
@@ -650,7 +718,7 @@ impl Handler {
         let emoji = command::find_emoji_option(&command, "emoji", false);
         let color = command::find_string_option(&command, "color", false, None)
             .map(button::parse_color)
-            .unwrap_or_else(|| button::determinist(&name.to_lowercase()));
+            .unwrap_or_else(|| button::determinist(&name.to_lowercase(), self.allow_grey));
         let index = command::find_integer_option(&command, "position", false, None)
             .map(|p| (p - 1) as usize);
 
@@ -1252,6 +1320,20 @@ impl Handler {
                         .kind(CommandOptionType::SubCommand)
                         .name("list")
                         .description("List all sounds available on this server")
+                        .create_sub_option(|option| {
+                            option
+                                .kind(CommandOptionType::Boolean)
+                                .name("random")
+                                .description("Add a random sound button")
+                                .required(false)
+                        })
+                        .create_sub_option(|option| {
+                            option
+                                .kind(CommandOptionType::Boolean)
+                                .name("latest")
+                                .description("Add a latest sound button")
+                                .required(false)
+                        })
                 });
 
                 // Upload.
@@ -1761,6 +1843,7 @@ async fn main() -> ExitCode {
         .event_handler(Handler {
             bot_id: Arc::new(AtomicU64::new(0)),
             allow_delete: !options.disable_delete,
+            allow_grey: options.allow_grey,
             recorder: Arc::clone(&recorder),
             soundboard: Arc::clone(&soundboard),
             history: Arc::clone(&history),
