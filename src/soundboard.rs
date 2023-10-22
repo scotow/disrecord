@@ -689,7 +689,10 @@ impl Soundboard {
             .collect::<Value>();
 
         let mut data = Vec::new();
-        for sound in sounds.values_mut() {
+        for sound in sounds
+            .values_mut()
+            .filter(|sound| sound.metadata.guild == guild.0)
+        {
             data.push((
                 format!("{}.wav", sound.metadata.id.to_string()),
                 sound
