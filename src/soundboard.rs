@@ -14,7 +14,10 @@ use rand::seq::IteratorRandom;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use serenity::model::{application::component::ButtonStyle, channel::Attachment, id::GuildId};
+use serenity::{
+    all::ButtonStyle,
+    model::{channel::Attachment, id::GuildId},
+};
 use thiserror::Error as ThisError;
 use tokio::{fs, fs::OpenOptions, io::AsyncWriteExt, process::Command, sync::Mutex, time::sleep};
 use ulid::Ulid;
@@ -97,7 +100,7 @@ impl Soundboard {
             .lock()
             .await
             .values()
-            .filter(|sound| sound.metadata.guild == guild.0)
+            .filter(|sound| sound.metadata.guild == guild.get())
             .into_group_map_by(|sound| &sound.metadata.group)
             .into_iter()
             .sorted_by(|(g1, _), (g2, _)| g1.cmp(g2))
@@ -116,7 +119,7 @@ impl Soundboard {
             .await
             .values()
             .filter_map(|sound| {
-                (sound.metadata.guild == guild.0 && regex.is_match(&sound.metadata.name))
+                (sound.metadata.guild == guild.get() && regex.is_match(&sound.metadata.name))
                     .then(|| sound.metadata.name.clone())
             })
             .sorted()
@@ -132,7 +135,7 @@ impl Soundboard {
             .await
             .values()
             .filter_map(|sound| {
-                (sound.metadata.guild == guild.0 && regex.is_match(&sound.metadata.group))
+                (sound.metadata.guild == guild.get() && regex.is_match(&sound.metadata.group))
                     .then(|| sound.metadata.group.clone())
             })
             .sorted()
@@ -161,7 +164,7 @@ impl Soundboard {
 
         let mut sounds = self.sounds.lock().await;
         let mut matching = sounds.values_mut().filter(|sound| {
-            sound.metadata.guild == guild.0
+            sound.metadata.guild == guild.get()
                 && name_regex.is_match(&sound.metadata.name)
                 && group_regex
                     .as_ref()
@@ -201,8 +204,8 @@ impl Soundboard {
             .await
             .map_err(|_| SoundboardError::SoundFetch)?;
 
-        // Verify sound format and transcode with ffmpeg if needed.
-        let data = if wav::is_valid(&data) {
+        // If sound is already PCM s16le WAV, keep it as is, transcode it otherwise.
+        let data = if wav::is_valid_pcm_s16le(&data) {
             data
         } else {
             let filename = PathBuf::from(&attachment.filename);
@@ -214,10 +217,7 @@ impl Soundboard {
             let mut cmd = Command::new(&self.ffmpeg_path);
             cmd.args(["-f", extension]) // Input file format.
                 .args(["-i", "-"]) // Read from stdin.
-                .args(["-c:a", "pcm_s16le"]) // Transcode to PCM i16 LE.
-                .args(["-f", "s16le"]) // Output to raw PCM.
-                .args(["-ac", "1"]) // Mono channel.
-                .args(["-ar", "48000"]) // 48kHz sample rate.
+                .args(["-f", "wav"]) // Output to raw PCM.
                 .arg("-") // Output to stdout.
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
@@ -245,9 +245,7 @@ impl Soundboard {
                 return Err(SoundboardError::TranscodingFailed);
             }
 
-            let mut data = out.stdout;
-            wav::package_mut_raw(&mut data);
-            data
+            out.stdout
         };
 
         let mut sounds = self.sounds.lock().await;
@@ -266,7 +264,7 @@ impl Soundboard {
         // Check if name is already taken in this group.
         let name_regex = match_regex(&name);
         if sounds.values().any(|sound| {
-            sound.metadata.guild == guild.0
+            sound.metadata.guild == guild.get()
                 && name_regex.is_match(&sound.metadata.name)
                 && sound.metadata.group == group
         }) {
@@ -277,7 +275,7 @@ impl Soundboard {
         let mut overwrite_required = false;
         let group_sounds = sounds
             .values()
-            .filter(|s| s.metadata.guild == guild.0 && s.metadata.group == group);
+            .filter(|s| s.metadata.guild == guild.get() && s.metadata.group == group);
         let last_index = group_sounds.clone().map(|s| s.metadata.index).max();
 
         // IDEA: Append with gap of 1M. And when inserting between, insert at equal
@@ -293,7 +291,7 @@ impl Soundboard {
                     overwrite_required = true;
                     let mut sounds = sounds
                         .values_mut()
-                        .filter(|s| s.metadata.guild == guild.0 && s.metadata.group == group)
+                        .filter(|s| s.metadata.guild == guild.get() && s.metadata.group == group)
                         .collect_vec();
                     sounds.sort_by_key(|s| s.metadata.index);
                     let prev_index = sounds[requested_index].metadata.index;
@@ -307,7 +305,7 @@ impl Soundboard {
 
         let id = Ulid::new();
         let metadata = SoundMetadata {
-            guild: guild.0,
+            guild: guild.get(),
             id,
             name,
             emoji,
@@ -357,7 +355,7 @@ impl Soundboard {
 
         let mut sounds = self.sounds.lock().await;
         let mut matching = sounds.iter().filter_map(|(id, sound)| {
-            (sound.metadata.guild == guild.0
+            (sound.metadata.guild == guild.get()
                 && name_regex.is_match(&sound.metadata.name)
                 && group_regex
                     .as_ref()
@@ -380,7 +378,7 @@ impl Soundboard {
     pub async fn delete_id(&self, guild: GuildId, id: Ulid) -> Result<(), SoundboardError> {
         let mut sounds = self.sounds.lock().await;
         let sound = sounds.remove(&id).ok_or(SoundboardError::SoundNotFound)?;
-        assert_eq!(sound.metadata.guild, guild.0);
+        assert_eq!(sound.metadata.guild, guild.get());
         self.overwrite_metadata_file(&sounds).await?;
         fs::remove_file(sound.metadata.get_file_path(&self.sounds_dir_path))
             .await
@@ -406,7 +404,7 @@ impl Soundboard {
 
         // Get sound id. We must resolve ambiguity first.
         let mut matching = sounds.values().filter_map(|sound| {
-            (sound.metadata.guild == guild.0
+            (sound.metadata.guild == guild.get()
                 && name_regex.is_match(&sound.metadata.name)
                 && group_regex
                     .as_ref()
@@ -422,7 +420,7 @@ impl Soundboard {
         // Check if a sound with the requested name already exists.
         let new_name_regex = match_regex(&new_name);
         if sounds.values().any(|sound| {
-            sound.metadata.guild == guild.0
+            sound.metadata.guild == guild.get()
                 && new_name_regex.is_match(&sound.metadata.name)
                 && sound.metadata.group == group
         }) {
@@ -451,7 +449,7 @@ impl Soundboard {
 
         // Check if the name is already taken in the target group.
         if sounds.values().any(|sound| {
-            sound.metadata.guild == guild.0
+            sound.metadata.guild == guild.get()
                 && name_regex.is_match(&sound.metadata.name)
                 && new_group_regex.is_match(&sound.metadata.group)
         }) {
@@ -472,7 +470,7 @@ impl Soundboard {
         let index = sounds
             .values()
             .filter_map(|s| {
-                (s.metadata.guild == guild.0 && s.metadata.group == new_group)
+                (s.metadata.guild == guild.get() && s.metadata.group == new_group)
                     .then_some(s.metadata.index)
             })
             .max()
@@ -482,7 +480,7 @@ impl Soundboard {
         // Find requested sound to change.
         let group_regex = group.map(match_regex);
         let mut matching = sounds.values_mut().filter(|sound| {
-            sound.metadata.guild == guild.0
+            sound.metadata.guild == guild.get()
                 && name_regex.is_match(&sound.metadata.name)
                 && group_regex
                     .as_ref()
@@ -517,7 +515,7 @@ impl Soundboard {
 
         let mut sounds = self.sounds.lock().await;
         let mut matching = sounds.values_mut().filter(|sound| {
-            sound.metadata.guild == guild.0
+            sound.metadata.guild == guild.get()
                 && name_regex.is_match(&sound.metadata.name)
                 && group_regex
                     .as_ref()
@@ -583,7 +581,7 @@ impl Soundboard {
 
         let sounds = self.sounds.lock().await;
         let mut matching = sounds.iter().filter_map(|(id, sound)| {
-            (sound.metadata.guild == guild.0
+            (sound.metadata.guild == guild.get()
                 && name_regex.is_match(&sound.metadata.name)
                 && group_regex
                     .as_ref()
@@ -604,7 +602,7 @@ impl Soundboard {
             .lock()
             .await
             .values()
-            .filter_map(|sound| (sound.metadata.guild == guild.0).then_some(sound.metadata.id))
+            .filter_map(|sound| (sound.metadata.guild == guild.get()).then_some(sound.metadata.id))
             .choose(&mut rand::thread_rng())
     }
 
@@ -614,7 +612,7 @@ impl Soundboard {
             .await
             .values()
             .filter_map(|sound| {
-                if sound.metadata.guild != guild.0 {
+                if sound.metadata.guild != guild.get() {
                     return None;
                 }
                 let mut hasher = DefaultHasher::new();
@@ -629,7 +627,7 @@ impl Soundboard {
             .lock()
             .await
             .values()
-            .filter_map(|sound| (sound.metadata.guild == guild.0).then_some(sound.metadata.id))
+            .filter_map(|sound| (sound.metadata.guild == guild.get()).then_some(sound.metadata.id))
             .max()
     }
 
@@ -664,7 +662,7 @@ impl Soundboard {
 
         let metadata = sounds
             .values()
-            .filter(|sound| sound.metadata.guild == guild.0)
+            .filter(|sound| sound.metadata.guild == guild.get())
             .into_group_map_by(|sound| &sound.metadata.group)
             .into_iter()
             .sorted_by(|(g1, _), (g2, _)| g1.cmp(g2))
@@ -691,7 +689,7 @@ impl Soundboard {
         let mut data = Vec::new();
         for sound in sounds
             .values_mut()
-            .filter(|sound| sound.metadata.guild == guild.0)
+            .filter(|sound| sound.metadata.guild == guild.get())
         {
             data.push((
                 format!("{}.wav", sound.metadata.id.to_string()),

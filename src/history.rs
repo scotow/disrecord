@@ -1,61 +1,30 @@
 pub use std::collections::HashMap;
 use std::{
     collections::VecDeque,
-    sync::Arc,
     time::{Duration, Instant},
 };
 
 use itertools::Itertools;
-use serenity::model::id::{ChannelId, GuildId, UserId};
-use tokio::{sync::Mutex, time::sleep};
+use serenity::model::id::{GuildId, UserId};
+use tokio::sync::Mutex;
 use ulid::Ulid;
 
-const CHANNEL_TOPIC_EDIT_RATE_LIMIT: Duration = Duration::from_secs(5 * 60);
 const LOGS_DURATION: Duration = Duration::from_secs(5 * 60);
 const MIN_LOGS_FETCH: Duration = Duration::from_secs(30);
 
 #[derive(Default)]
 pub struct History {
     guild_counters: Mutex<HashMap<GuildId, GuildHistory>>,
-    channel_counters: Mutex<HashMap<ChannelId, Arc<Mutex<ChannelHistory>>>>,
 }
 
 impl History {
-    pub async fn register(
-        &self,
-        guild: GuildId,
-        channel: ChannelId,
-        user: UserId,
-        sound: Ulid,
-    ) -> Option<Vec<(UserId, u32)>> {
+    pub async fn register(&self, guild: GuildId, user: UserId, sound: Ulid) {
         self.guild_counters
             .lock()
             .await
             .entry(guild)
             .or_default()
             .register(user, sound);
-
-        let channel_history = self
-            .channel_counters
-            .lock()
-            .await
-            .entry(channel)
-            .or_default()
-            .clone();
-        let mut channel_history_lock = channel_history.lock().await;
-        channel_history_lock.register(user);
-
-        if channel_history_lock.pushing_counters {
-            None
-        } else {
-            channel_history_lock.pushing_counters = true;
-            drop(channel_history_lock);
-            sleep(CHANNEL_TOPIC_EDIT_RATE_LIMIT + Duration::from_secs(15)).await;
-
-            let mut channel_history_lock = channel_history.lock().await;
-            channel_history_lock.pushing_counters = false;
-            Some(channel_history_lock.top_counters())
-        }
     }
 
     pub async fn get_logs(
@@ -124,32 +93,5 @@ impl GuildHistory {
             .unique()
             .nth(offset)
             .cloned()
-    }
-}
-
-#[derive(Default)]
-struct ChannelHistory {
-    pushing_counters: bool,
-    counters: HashMap<UserId, (u32, Instant)>,
-}
-
-impl ChannelHistory {
-    fn register(&mut self, user: UserId) {
-        // Increment all-time counter.
-        let counter = self
-            .counters
-            .entry(user)
-            .or_insert_with(|| (0, Instant::now()));
-        counter.0 += 1;
-        counter.1 = Instant::now();
-    }
-
-    fn top_counters(&self) -> Vec<(UserId, u32)> {
-        self.counters
-            .iter()
-            .sorted_by(|u1, u2| u1.1 .1.cmp(&u2.1 .1).reverse())
-            .take(5)
-            .map(|(u, (n, _ts))| (*u, *n))
-            .collect()
     }
 }

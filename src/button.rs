@@ -3,10 +3,7 @@ use std::{
     hash::{Hash, Hasher},
 };
 
-use serenity::{
-    builder::CreateButton,
-    model::{application::component::ButtonStyle, channel::ReactionType},
-};
+use serenity::{all::ButtonStyle, builder::CreateButton, model::channel::ReactionType};
 
 use crate::soundboard::SoundMetadata;
 
@@ -59,41 +56,40 @@ pub enum SoundButton {
 }
 
 impl SoundButton {
-    pub fn apply<'a>(&self, create_button: &'a mut CreateButton) -> &'a mut CreateButton {
-        create_button
-            .custom_id(match self {
-                SoundButton::Sound(sound) => sound.id.to_string(),
-                SoundButton::Random(Some(group)) => {
-                    let mut hasher = DefaultHasher::new();
-                    group.hash(&mut hasher);
-                    format!("random-{}", hasher.finish())
-                }
-                SoundButton::Random(None) => "random".to_string(),
-                SoundButton::Latest => "latest".to_string(),
-            })
-            .style(match self {
-                SoundButton::Sound(sound) => sound.color,
-                SoundButton::Random(_) => ButtonStyle::Primary,
-                SoundButton::Latest => ButtonStyle::Success,
-            })
-            .label(match self {
-                SoundButton::Sound(sound) => &sound.name,
-                SoundButton::Random(_) => "Random",
-                SoundButton::Latest => "Latest",
-            });
+    pub fn create(&self) -> CreateButton {
+        let mut button = CreateButton::new(match self {
+            SoundButton::Sound(sound) => sound.id.to_string(),
+            SoundButton::Random(Some(group)) => {
+                let mut hasher = DefaultHasher::new();
+                group.hash(&mut hasher);
+                format!("random-{}", hasher.finish())
+            }
+            SoundButton::Random(None) => "random".to_string(),
+            SoundButton::Latest => "latest".to_string(),
+        })
+        .style(match self {
+            SoundButton::Sound(sound) => sound.color,
+            SoundButton::Random(_) => ButtonStyle::Primary,
+            SoundButton::Latest => ButtonStyle::Success,
+        })
+        .label(match self {
+            SoundButton::Sound(sound) => &sound.name,
+            SoundButton::Random(_) => "Random",
+            SoundButton::Latest => "Latest",
+        });
         match self {
             SoundButton::Sound(sound) => {
                 if let Some(emoji) = &sound.emoji {
-                    create_button.emoji(ReactionType::Unicode(emoji.clone()));
+                    button = button.emoji(ReactionType::Unicode(emoji.clone()));
                 }
             }
             SoundButton::Random(_) => {
-                create_button.emoji(ReactionType::from('🎲'));
+                button = button.emoji(ReactionType::from('🎲'));
             }
             SoundButton::Latest => {
-                create_button.emoji(ReactionType::from('➡'));
+                button = button.emoji(ReactionType::from('➡'));
             }
         }
-        create_button
+        button
     }
 }

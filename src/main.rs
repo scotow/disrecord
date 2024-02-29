@@ -1,5 +1,4 @@
 use std::{
-    borrow::Cow,
     collections::{HashSet, VecDeque},
     io::{Cursor, Write},
     net::SocketAddr,
@@ -18,40 +17,32 @@ use axum::{
 };
 use clap::Parser;
 use env_logger::Builder;
-use futures::{future, future::FutureExt};
 use itertools::Itertools;
 use log::{error, info, warn};
 use serenity::{
+    all::{
+        AutocompleteChoice, ButtonStyle, ChannelId, ChannelType, Command, CommandInteraction,
+        CommandOptionType, CommandType, ComponentInteraction, CreateAllowedMentions,
+        CreateAutocompleteResponse, CreateButton, CreateCommand, CreateCommandOption,
+        CreateInteractionResponse, CreateInteractionResponseMessage, CreateMessage, GuildId,
+        HttpError, Interaction, Mention, ReactionType, Ready, UserId, VoiceState,
+    },
     async_trait,
+    builder::{CreateActionRow, CreateAttachment, CreateInteractionResponseFollowup},
     cache::Cache,
     client::{Context, EventHandler},
-    http::{error::Error, Http},
-    model::{
-        application::{
-            command::{Command, CommandOptionType, CommandType},
-            component::ButtonStyle,
-            interaction::{
-                application_command::{
-                    ApplicationCommandInteraction, CommandDataOption, CommandDataOptionValue,
-                },
-                autocomplete::AutocompleteInteraction,
-                message_component::MessageComponentInteraction,
-                Interaction, InteractionResponseType,
-            },
-        },
-        channel::{AttachmentType, ChannelType, ReactionType},
-        gateway::Ready,
-        id::{ChannelId, GuildId, UserId},
-        mention::Mention,
-        prelude::VoiceState,
-    },
-    prelude::GatewayIntents,
-    CacheAndHttp, Client, Error as SerenityError,
+    http::Http,
+    prelude::{GatewayIntents, SerenityError},
+    Client,
 };
+// use songbird::{
+//     driver::DecodeMode,
+//     input::{Codec, Container, Input, Reader},
+//     CoreEvent, Event, EventContext, EventHandler as VoiceEventHandler, SerenityInit,
+// Songbird, };
+use songbird::EventHandler as VoiceEventHandler;
 use songbird::{
-    driver::DecodeMode,
-    input::{Codec, Container, Input, Reader},
-    CoreEvent, Event, EventContext, EventHandler as VoiceEventHandler, SerenityInit, Songbird,
+    driver::DecodeMode, input::Input, CoreEvent, Event, EventContext, SerenityInit, Songbird,
 };
 use tokio::sync::{mpsc::UnboundedSender, oneshot, Mutex};
 use ulid::Ulid;
@@ -100,7 +91,7 @@ impl EventHandler for Handler {
     async fn ready(&self, ctx: Context, data_about_bot: Ready) {
         info!("bot ready");
         self.bot_id
-            .store(*data_about_bot.user.id.as_u64(), Ordering::Relaxed);
+            .store(data_about_bot.user.id.get(), Ordering::Relaxed);
         self.register_global_commands(&ctx).await;
     }
 
@@ -115,10 +106,8 @@ impl EventHandler for Handler {
 
     async fn interaction_create(&self, ctx: Context, interaction: Interaction) {
         match interaction {
-            Interaction::ApplicationCommand(command) => self.dispatch_command(ctx, command).await,
-            Interaction::MessageComponent(component) => {
-                self.dispatch_component(ctx, component).await
-            }
+            Interaction::Command(command) => self.dispatch_command(ctx, command).await,
+            Interaction::Component(component) => self.dispatch_component(ctx, component).await,
             Interaction::Autocomplete(autocomplete) => {
                 self.dispatch_autocomplete(ctx, autocomplete).await
             }
@@ -139,15 +128,17 @@ impl VoiceEventHandler for VoiceHandler {
             EventContext::SpeakingStateUpdate(event) => {
                 if let Some(user) = event.user_id {
                     self.guild_recorder
-                        .send(RecorderAction::MapUser(UserId(user.0), event.ssrc))
+                        .send(RecorderAction::MapUser(UserId::new(user.0), event.ssrc))
                         .expect("Event dispatch error");
                 }
             }
-            EventContext::VoicePacket(packet) => {
-                if let Some(audio) = packet.audio {
+            EventContext::VoiceTick(packet) => {
+                for (ssrc, audio) in packet.speaking.iter().filter_map(|(ssrc, data)| {
+                    data.decoded_voice.as_ref().map(|decoded| (*ssrc, decoded))
+                }) {
                     self.guild_recorder
                         .send(RecorderAction::RegisterVoiceData(
-                            packet.packet.ssrc,
+                            ssrc,
                             audio
                                 .chunks_exact(2)
                                 .map(|cs| ((cs[0] as i32 + cs[1] as i32) / 2) as i16)
@@ -163,7 +154,7 @@ impl VoiceEventHandler for VoiceHandler {
 }
 
 impl Handler {
-    async fn dispatch_command(&self, ctx: Context, command: ApplicationCommandInteraction) {
+    async fn dispatch_command(&self, ctx: Context, command: CommandInteraction) {
         match command.data.name.as_str() {
             // Common.
             "version" => self.version(ctx, command).await,
@@ -198,7 +189,7 @@ impl Handler {
         };
     }
 
-    async fn dispatch_component(&self, ctx: Context, component: MessageComponentInteraction) {
+    async fn dispatch_component(&self, ctx: Context, component: ComponentInteraction) {
         let Some(guild) = component.guild_id else {
             return;
         };
@@ -246,70 +237,57 @@ impl Handler {
             return;
         }
 
-        if let Some(history) = self
-            .history
-            .register(guild, component.channel_id, component.user.id, sound)
-            .await
-        {
-            let topic = future::join_all(history.into_iter().map(|(user, n)| {
-                user.to_user_cached(&ctx)
-                    .map(move |u| u.map(|u| format!("{}: {}", u.name, n)))
-            }))
-            .await
-            .into_iter()
-            .flatten()
-            .join(", ");
-
-            component
-                .channel_id
-                .edit(&ctx, |edit| edit.topic(topic))
-                .await
-                .expect("Failed to update channel topic");
-        }
+        self.history.register(guild, component.user.id, sound).await;
     }
 
-    async fn dispatch_autocomplete(&self, ctx: Context, autocomplete: AutocompleteInteraction) {
-        let Some(guild) = autocomplete.guild_id else {
+    async fn dispatch_autocomplete(&self, ctx: Context, interaction: CommandInteraction) {
+        let Some(guild) = interaction.guild_id else {
             return;
         };
 
-        let matches = match find_autocompleting(&autocomplete.data.options) {
-            Some(("sound", CommandDataOptionValue::String(search))) => {
+        let Some(autocomplete) = interaction.data.autocomplete() else {
+            return;
+        };
+
+        let matches = match autocomplete.name {
+            "sound" => {
                 self.soundboard
-                    .names_matching(guild, search, AUTOCOMPLETE_MAX_CHOICES)
+                    .names_matching(guild, autocomplete.value, AUTOCOMPLETE_MAX_CHOICES)
                     .await
             }
-            Some(("group", CommandDataOptionValue::String(search))) => {
+            "group" => {
                 self.soundboard
-                    .groups_matching(guild, search, AUTOCOMPLETE_MAX_CHOICES)
+                    .groups_matching(guild, autocomplete.value, AUTOCOMPLETE_MAX_CHOICES)
                     .await
             }
             _ => return,
         };
 
-        autocomplete
-            .create_autocomplete_response(&ctx, |response| {
-                for m in matches {
-                    response.add_string_choice(&m, &m);
-                }
-                response
-            })
+        interaction
+            .create_response(
+                ctx,
+                CreateInteractionResponse::Autocomplete(
+                    CreateAutocompleteResponse::new()
+                        .set_choices(matches.into_iter().map(AutocompleteChoice::from).collect()),
+                ),
+            )
             .await
             .expect("Failed to send autocomplete response");
     }
 
-    async fn version(&self, ctx: Context, command: ApplicationCommandInteraction) {
+    async fn version(&self, ctx: Context, command: CommandInteraction) {
         command
-            .create_interaction_response(&ctx, |response| {
-                response
-                    .kind(InteractionResponseType::ChannelMessageWithSource)
-                    .interaction_response_data(|message| message.content(env!("CARGO_PKG_VERSION")))
-            })
+            .create_response(
+                &ctx,
+                CreateInteractionResponse::Message(
+                    CreateInteractionResponseMessage::new().content(env!("CARGO_PKG_VERSION")),
+                ),
+            )
             .await
             .expect("Version response failure");
     }
 
-    async fn get_whitelist(&self, ctx: Context, command: ApplicationCommandInteraction) {
+    async fn get_whitelist(&self, ctx: Context, command: CommandInteraction) {
         let Some(guild) = command.guild_id else {
             return;
         };
@@ -332,24 +310,23 @@ impl Handler {
             .collect::<HashSet<_>>();
 
         command
-            .create_interaction_response(&ctx, |response| {
-                response
-                    .kind(InteractionResponseType::ChannelMessageWithSource)
-                    .interaction_response_data(|message| {
-                        message
-                            .content(if list.is_empty() {
-                                "*Nobody.*".to_owned()
-                            } else {
-                                list.into_iter().map(Mention::from).join(", ")
-                            })
-                            .allowed_mentions(|mentions| mentions.empty_parse())
-                    })
-            })
+            .create_response(
+                &ctx,
+                CreateInteractionResponse::Message(
+                    CreateInteractionResponseMessage::new()
+                        .content(if list.is_empty() {
+                            "*Nobody.*".to_owned()
+                        } else {
+                            list.into_iter().map(Mention::from).join(", ")
+                        })
+                        .allowed_mentions(CreateAllowedMentions::new()),
+                ),
+            )
             .await
             .expect("Cannot send whitelist");
     }
 
-    async fn join_whitelist(&self, ctx: Context, command: ApplicationCommandInteraction) {
+    async fn join_whitelist(&self, ctx: Context, command: CommandInteraction) {
         self.recorder
             .lock()
             .await
@@ -357,18 +334,18 @@ impl Handler {
             .await;
 
         command
-            .create_interaction_response(&ctx, |response| {
-                response
-                    .kind(InteractionResponseType::ChannelMessageWithSource)
-                    .interaction_response_data(|message| {
-                        message.content("You are now in the whitelist.")
-                    })
-            })
+            .create_response(
+                &ctx,
+                CreateInteractionResponse::Message(
+                    CreateInteractionResponseMessage::new()
+                        .content("You are now in the whitelist."),
+                ),
+            )
             .await
             .expect("Adding to whitelist failed");
     }
 
-    async fn leave_whitelist(&self, ctx: Context, command: ApplicationCommandInteraction) {
+    async fn leave_whitelist(&self, ctx: Context, command: CommandInteraction) {
         self.recorder
             .lock()
             .await
@@ -376,32 +353,33 @@ impl Handler {
             .await;
 
         command
-            .create_interaction_response(&ctx, |response| {
-                response
-                    .kind(InteractionResponseType::ChannelMessageWithSource)
-                    .interaction_response_data(|message| {
-                        message.content("You have been removed from the whitelist.")
-                    })
-            })
+            .create_response(
+                &ctx,
+                CreateInteractionResponse::Message(
+                    CreateInteractionResponseMessage::new()
+                        .content("You have been removed from the whitelist."),
+                ),
+            )
             .await
             .expect("Leaving whitelist failed");
     }
 
-    async fn join_voice(&self, ctx: Context, command: ApplicationCommandInteraction) {
+    async fn join_voice(&self, ctx: Context, command: CommandInteraction) {
         let Some(guild) = command.guild_id else {
             return;
         };
-        let channel = match find_voice_channel(&ctx, guild, command.user.id).await {
+        let channel = match find_voice_channel(&ctx.http, &ctx.cache, guild, command.user.id).await
+        {
             Some(channel) => channel,
             None => {
                 command
-                    .create_interaction_response(&ctx, |response| {
-                        response
-                            .kind(InteractionResponseType::ChannelMessageWithSource)
-                            .interaction_response_data(|message| {
-                                message.content("You aren't in a voice channel. Dahhh...")
-                            })
-                    })
+                    .create_response(
+                        &ctx,
+                        CreateInteractionResponse::Message(
+                            CreateInteractionResponseMessage::new()
+                                .content("You aren't in a voice channel. Dahhh..."),
+                        ),
+                    )
                     .await
                     .expect("Cannot send voice channel not found message");
                 return;
@@ -422,7 +400,7 @@ impl Handler {
             Event::Core(CoreEvent::SpeakingStateUpdate),
             recorder.clone(),
         );
-        call_lock.add_global_event(Event::Core(CoreEvent::VoicePacket), recorder);
+        call_lock.add_global_event(Event::Core(CoreEvent::VoiceTick), recorder);
 
         let handle = call_lock
             .join(channel)
@@ -432,22 +410,22 @@ impl Handler {
         handle.await.expect("Voice connexion failure");
 
         command
-            .create_interaction_response(&ctx, |response| {
-                response
-                    .kind(InteractionResponseType::ChannelMessageWithSource)
-                    .interaction_response_data(|message| {
-                        message.content("Listening and ready to play sounds.")
-                    })
-            })
+            .create_response(
+                &ctx,
+                CreateInteractionResponse::Message(
+                    CreateInteractionResponseMessage::new()
+                        .content("Listening and ready to play sounds."),
+                ),
+            )
             .await
             .expect("Cannot send listen message");
     }
 
-    async fn download_recording(&self, ctx: Context, command: ApplicationCommandInteraction) {
+    async fn download_recording(&self, ctx: Context, command: CommandInteraction) {
         let Some(guild) = command.guild_id else {
             return;
         };
-        let Some(requested_user) = command::find_user_option(&command, "user", false) else {
+        let Some(requested_user) = command::find_user_option(&command, "user") else {
             return;
         };
 
@@ -469,54 +447,47 @@ impl Handler {
                     .enumerate()
                 {
                     let filename = if data.len() <= (MAX_FILE_SIZE - wav::HEADER_SIZE) / 2 {
-                        format!("{}.wav", requested_user.name)
+                        format!("{}.wav", requested_user)
                     } else {
-                        format!("{}-{}.wav", requested_user.name, i + 1)
+                        format!("{}-{}.wav", requested_user, i + 1)
                     };
 
                     command
-                        .create_followup_message(&ctx, |response| {
-                            response.add_file(AttachmentType::Bytes {
-                                data: Cow::from(wav::package(chunk)),
-                                filename,
-                            })
-                        })
+                        .create_followup(
+                            &ctx,
+                            CreateInteractionResponseFollowup::new()
+                                .add_file(CreateAttachment::bytes(wav::package(chunk), filename)),
+                        )
                         .await
                         .expect("Voice data transmission failure");
                 }
             }
             None => {
                 command
-                    .create_interaction_response(&ctx, |response| {
-                        response
-                            .kind(InteractionResponseType::ChannelMessageWithSource)
-                            .interaction_response_data(|message| {
-                                message
-                                    .content(format!("No voice data found for {}.", requested_user))
-                                    .allowed_mentions(|mentions| mentions.empty_parse())
-                            })
-                    })
+                    .create_response(
+                        &ctx,
+                        CreateInteractionResponse::Message(
+                            CreateInteractionResponseMessage::new()
+                                .content(format!("No voice data found for {}.", requested_user))
+                                .allowed_mentions(CreateAllowedMentions::new()),
+                        ),
+                    )
                     .await
                     .expect("Download response failure");
             }
         }
     }
 
-    async fn download_recording_chunks(
-        &self,
-        ctx: Context,
-        command: ApplicationCommandInteraction,
-    ) {
+    async fn download_recording_chunks(&self, ctx: Context, command: CommandInteraction) {
         let Some(guild) = command.guild_id else {
             return;
         };
-        let Some(requested_user) = command::find_user_option(&command, "user", false) else {
+        let Some(requested_user) = command::find_user_option(&command, "user") else {
             return;
         };
         let Some(count) = command::find_integer_option(
             &command,
             "count",
-            false,
             Some(MAX_ATTACHEMENTS_PER_MESSAGE as i64),
         )
         .map(|c| c as usize) else {
@@ -525,15 +496,15 @@ impl Handler {
         let Some(min_duration) = command::find_duration_option(
             &command,
             "min-duration",
-            false,
             Some(Duration::from_millis(500)),
         ) else {
             command
-                .create_interaction_response(&ctx, |response| {
-                    response
-                        .kind(InteractionResponseType::ChannelMessageWithSource)
-                        .interaction_response_data(|message| message.content("Invalid duration."))
-                })
+                .create_response(
+                    &ctx,
+                    CreateInteractionResponse::Message(
+                        CreateInteractionResponseMessage::new().content("Invalid duration."),
+                    ),
+                )
                 .await
                 .expect("Recording chunks invalid duration response failure");
             return;
@@ -560,67 +531,67 @@ impl Handler {
                 let count = data.len();
                 for (group_index, chunks) in data.chunks(MAX_ATTACHEMENTS_PER_MESSAGE).enumerate() {
                     command
-                        .create_followup_message(&ctx, |response| {
-                            response.add_files(chunks.into_iter().enumerate().map(|(i, chunk)| {
-                                AttachmentType::Bytes {
-                                    data: Cow::from(wav::package(&chunk)),
-                                    filename: if count > 1 {
-                                        format!(
-                                            "{}-{}.wav",
-                                            requested_user.name,
-                                            group_index * MAX_ATTACHEMENTS_PER_MESSAGE + i + 1
-                                        )
-                                    } else {
-                                        format!("{}.wav", requested_user.name)
-                                    },
-                                }
-                            }))
-                        })
+                        .create_followup(
+                            &ctx,
+                            CreateInteractionResponseFollowup::new().add_files(
+                                chunks.into_iter().enumerate().map(|(i, chunk)| {
+                                    CreateAttachment::bytes(
+                                        wav::package(&chunk),
+                                        if count > 1 {
+                                            format!(
+                                                "{}-{}.wav",
+                                                requested_user,
+                                                group_index * MAX_ATTACHEMENTS_PER_MESSAGE + i + 1
+                                            )
+                                        } else {
+                                            format!("{}.wav", requested_user)
+                                        },
+                                    )
+                                }),
+                            ),
+                        )
                         .await
                         .expect("Voice data transmission failure");
                 }
             }
             None => {
                 command
-                    .create_interaction_response(&ctx, |response| {
-                        response
-                            .kind(InteractionResponseType::ChannelMessageWithSource)
-                            .interaction_response_data(|message| {
-                                message
-                                    .content(format!("No voice data found for {}.", requested_user))
-                                    .allowed_mentions(|mentions| mentions.empty_parse())
-                            })
-                    })
+                    .create_response(
+                        &ctx,
+                        CreateInteractionResponse::Message(
+                            CreateInteractionResponseMessage::new()
+                                .content(format!("No voice data found for {}.", requested_user))
+                                .allowed_mentions(CreateAllowedMentions::new()),
+                        ),
+                    )
                     .await
                     .expect("Download response failure");
             }
         }
     }
 
-    async fn list_sounds(&self, ctx: Context, command: ApplicationCommandInteraction) {
+    async fn list_sounds(&self, ctx: Context, command: CommandInteraction) {
         let Some(guild) = command.guild_id else {
             return;
         };
 
-        let Some(add_random) = command::find_boolean_option(&command, "random", false, Some(true))
-        else {
+        let Some(add_random) = command::find_boolean_option(&command, "random", Some(true)) else {
             return;
         };
-        let Some(add_latest) = command::find_boolean_option(&command, "latest", false, Some(true))
-        else {
+        let Some(add_latest) = command::find_boolean_option(&command, "latest", Some(true)) else {
             return;
         };
 
         let sounds = self.soundboard.list(guild).await;
         if sounds.is_empty() {
             command
-                .create_interaction_response(&ctx, |response| {
-                    response
-                        .kind(InteractionResponseType::ChannelMessageWithSource)
-                        .interaction_response_data(|message| {
-                            message.content("There is no sounds uploaded to this server... yet.")
-                        })
-                })
+                .create_response(
+                    &ctx,
+                    CreateInteractionResponse::Message(
+                        CreateInteractionResponseMessage::new()
+                            .content("There is no sounds uploaded to this server... yet."),
+                    ),
+                )
                 .await
                 .expect("Cannot send empty soundboard message");
             return;
@@ -663,7 +634,7 @@ impl Handler {
             .await
             .expect("Failed to defer sound list");
         command
-            .delete_original_interaction_response(&ctx)
+            .delete_response(&ctx)
             .await
             .expect("Failed to delete original sound list interaction");
 
@@ -680,21 +651,24 @@ impl Handler {
             {
                 command
                     .channel_id
-                    .send_message(&ctx, |message| {
+                    .send_message(&ctx, {
+                        let mut message = CreateMessage::new();
                         if message_index == 0 {
-                            message.content(format!("# {group}"));
+                            message = message.content(format!("# {group}"));
                         }
-                        message.components(|components| {
-                            for sounds_row in sounds_message.chunks(SOUNDS_PER_ROW) {
-                                components.create_action_row(|row| {
-                                    for sound in sounds_row {
-                                        row.create_button(|button| sound.apply(button));
-                                    }
-                                    row
-                                });
-                            }
-                            components
-                        })
+                        message.components(
+                            sounds_message
+                                .chunks(SOUNDS_PER_ROW)
+                                .map(|sounds_row| {
+                                    CreateActionRow::Buttons(
+                                        sounds_row
+                                            .into_iter()
+                                            .map(|button| button.create())
+                                            .collect(),
+                                    )
+                                })
+                                .collect(),
+                        )
                     })
                     .await
                     .expect("Failed to send sounds list");
@@ -702,25 +676,25 @@ impl Handler {
         }
     }
 
-    async fn upload_sound(&self, ctx: Context, command: ApplicationCommandInteraction) {
+    async fn upload_sound(&self, ctx: Context, command: CommandInteraction) {
         let Some(guild) = command.guild_id else {
             return;
         };
-        let Some(attachment) = command::find_attachment_option(&command, "sound", false) else {
+        let Some(attachment) = command::find_attachment_option(&command, "sound") else {
             return;
         };
-        let Some(name) = command::find_string_option(&command, "name", false, None) else {
+        let Some(name) = command::find_string_option(&command, "name", None) else {
             return;
         };
-        let Some(group) = command::find_string_option(&command, "group", false, None) else {
+        let Some(group) = command::find_string_option(&command, "group", None) else {
             return;
         };
-        let emoji = command::find_emoji_option(&command, "emoji", false);
-        let color = command::find_string_option(&command, "color", false, None)
+        let emoji = command::find_emoji_option(&command, "emoji");
+        let color = command::find_string_option(&command, "color", None)
             .map(button::parse_color)
             .unwrap_or_else(|| button::determinist(&name.to_lowercase(), self.allow_grey));
-        let index = command::find_integer_option(&command, "position", false, None)
-            .map(|p| (p - 1) as usize);
+        let index =
+            command::find_integer_option(&command, "position", None).map(|p| (p - 1) as usize);
 
         match self
             .soundboard
@@ -737,26 +711,21 @@ impl Handler {
         {
             Ok(id) => {
                 match command
-                    .create_interaction_response(&ctx, |response| {
-                        response
-                            .kind(InteractionResponseType::ChannelMessageWithSource)
-                            .interaction_response_data(|message| {
-                                message.components(|components| {
-                                    components.create_action_row(|row| {
-                                        row.create_button(|button| {
-                                            button
-                                                .custom_id(id.to_string())
-                                                .label(name)
-                                                .style(color);
-                                            if let Some(emoji) = emoji {
-                                                button.emoji(ReactionType::Unicode(emoji));
-                                            }
-                                            button
-                                        })
-                                    })
-                                })
-                            })
-                    })
+                    .create_response(
+                        &ctx,
+                        CreateInteractionResponse::Message(
+                            CreateInteractionResponseMessage::new().components(vec![
+                                CreateActionRow::Buttons(vec![{
+                                    let mut button =
+                                        CreateButton::new(id.to_string()).label(name).style(color);
+                                    if let Some(emoji) = emoji {
+                                        button = button.emoji(ReactionType::Unicode(emoji));
+                                    }
+                                    button
+                                }]),
+                            ]),
+                        ),
+                    )
                     .await
                 {
                     Ok(()) => {}
@@ -767,8 +736,8 @@ impl Handler {
                             .await
                             .expect("Failed to delete sound due to error");
                         let err_msg = match err {
-                            SerenityError::Http(http_error) => match *http_error {
-                                Error::UnsuccessfulRequest(req) => {
+                            SerenityError::Http(http_error) => match http_error {
+                                HttpError::UnsuccessfulRequest(req) => {
                                     if req.status_code == StatusCode::BAD_REQUEST
                                         && req.error.code == INVALID_EMOJI_CODE
                                         && req.error.errors.into_iter().any(|sub_error| {
@@ -776,11 +745,13 @@ impl Handler {
                                         })
                                     {
                                         command
-                                            .create_interaction_response(&ctx, |response| {
-                                                response
-                                                    .kind(InteractionResponseType::ChannelMessageWithSource)
-                                                    .interaction_response_data(|message| message.content("Invalid emoji."))
-                                            })
+                                            .create_response(
+                                                &ctx,
+                                                CreateInteractionResponse::Message(
+                                                    CreateInteractionResponseMessage::new()
+                                                        .content("Invalid emoji."),
+                                                ),
+                                            )
                                             .await
                                             .expect("Cannot send sound creation emoji error");
                                         "Uncaught invalid emoji".to_owned()
@@ -801,102 +772,103 @@ impl Handler {
             }
             Err(err) => {
                 command
-                    .create_interaction_response(&ctx, |response| {
-                        response
-                            .kind(InteractionResponseType::ChannelMessageWithSource)
-                            .interaction_response_data(|message| message.content(err.to_string()))
-                    })
+                    .create_response(
+                        &ctx,
+                        CreateInteractionResponse::Message(
+                            CreateInteractionResponseMessage::new().content(err.to_string()),
+                        ),
+                    )
                     .await
                     .expect("Cannot send sound creation error message");
             }
         }
     }
 
-    async fn download_sound(&self, ctx: Context, command: ApplicationCommandInteraction) {
+    async fn download_sound(&self, ctx: Context, command: CommandInteraction) {
         let Some(guild) = command.guild_id else {
             return;
         };
-        let Some(name) = command::find_string_option(&command, "sound", false, None) else {
+        let Some(name) = command::find_string_option(&command, "sound", None) else {
             return;
         };
-        let group = command::find_string_option(&command, "group", false, None);
+        let group = command::find_string_option(&command, "group", None);
 
         // Does not support splitting.
         match self.soundboard.get_wav_by_name(guild, name, group).await {
             Ok(data) if data.len() <= MAX_FILE_SIZE => {
                 command.defer(&ctx).await.expect("Download defer failed");
                 command
-                    .create_followup_message(&ctx, |response| {
-                        response.add_file(AttachmentType::Bytes {
-                            data: Cow::from(data),
-                            filename: format!("{name}.wav"),
-                        })
-                    })
+                    .create_followup(
+                        &ctx,
+                        CreateInteractionResponseFollowup::new()
+                            .add_file(CreateAttachment::bytes(data, format!("{name}.wav"))),
+                    )
                     .await
                     .expect("Sound data transmission failure");
             }
             Ok(_) => {
                 command
-                    .create_interaction_response(&ctx, |response| {
-                        response
-                            .kind(InteractionResponseType::ChannelMessageWithSource)
-                            .interaction_response_data(|message| {
-                                message.content("Sound too large.")
-                            })
-                    })
+                    .create_response(
+                        &ctx,
+                        CreateInteractionResponse::Message(
+                            CreateInteractionResponseMessage::new().content("Sound too large."),
+                        ),
+                    )
                     .await
                     .expect("Download response failure");
             }
             Err(err) => {
                 command
-                    .create_interaction_response(&ctx, |response| {
-                        response
-                            .kind(InteractionResponseType::ChannelMessageWithSource)
-                            .interaction_response_data(|message| message.content(err.to_string()))
-                    })
+                    .create_response(
+                        &ctx,
+                        CreateInteractionResponse::Message(
+                            CreateInteractionResponseMessage::new().content(err.to_string()),
+                        ),
+                    )
                     .await
                     .expect("Download response failure");
             }
         }
     }
 
-    async fn delete_sound(&self, ctx: Context, command: ApplicationCommandInteraction) {
+    async fn delete_sound(&self, ctx: Context, command: CommandInteraction) {
         if !self.allow_delete {
             return;
         }
         let Some(guild) = command.guild_id else {
             return;
         };
-        let Some(name) = command::find_string_option(&command, "sound", false, None) else {
+        let Some(name) = command::find_string_option(&command, "sound", None) else {
             return;
         };
-        let group = command::find_string_option(&command, "group", false, None);
+        let group = command::find_string_option(&command, "group", None);
 
         let text = match self.soundboard.delete(guild, name, group).await {
             Ok(()) => "Deleted. *(for ever)*".to_owned(),
             Err(err) => err.to_string(),
         };
         command
-            .create_interaction_response(&ctx, |response| {
-                response
-                    .kind(InteractionResponseType::ChannelMessageWithSource)
-                    .interaction_response_data(|message| message.content(text))
-            })
+            .create_response(
+                &ctx,
+                CreateInteractionResponse::Message(
+                    CreateInteractionResponseMessage::new().content(text),
+                ),
+            )
             .await
             .expect("Cannot send sound deletion error message");
     }
 
-    async fn rename_sound(&self, ctx: Context, command: ApplicationCommandInteraction) {
+    async fn rename_sound(&self, ctx: Context, command: CommandInteraction) {
         let Some(guild) = command.guild_id else {
             return;
         };
-        let Some(name) = command::find_string_option(&command, "sound", false, None) else {
+        let Some(name) = command::find_string_option(&command, "sound", None) else {
             return;
         };
-        let Some(new_name) = command::find_string_option(&command, "new-name", false, None) else {
+        let Some(new_name) = command::find_string_option(&command, "new-name", None) else {
             return;
         };
-        let group = command::find_string_option(&command, "group", false, None);
+        let group = command::find_string_option(&command, "group", None);
 
         let text = match self
             .soundboard
@@ -908,26 +880,27 @@ impl Handler {
             Err(err) => err.to_string(),
         };
         command
-            .create_interaction_response(&ctx, |response| {
-                response
-                    .kind(InteractionResponseType::ChannelMessageWithSource)
-                    .interaction_response_data(|message| message.content(text))
-            })
+            .create_response(
+                &ctx,
+                CreateInteractionResponse::Message(
+                    CreateInteractionResponseMessage::new().content(text),
+                ),
+            )
             .await
             .expect("Cannot send sound's name change error message");
     }
 
-    async fn move_sound(&self, ctx: Context, command: ApplicationCommandInteraction) {
+    async fn move_sound(&self, ctx: Context, command: CommandInteraction) {
         let Some(guild) = command.guild_id else {
             return;
         };
-        let Some(name) = command::find_string_option(&command, "sound", false, None) else {
+        let Some(name) = command::find_string_option(&command, "sound", None) else {
             return;
         };
-        let Some(new_name) = command::find_string_option(&command, "new-group", false, None) else {
+        let Some(new_name) = command::find_string_option(&command, "new-group", None) else {
             return;
         };
-        let group = command::find_string_option(&command, "group", false, None);
+        let group = command::find_string_option(&command, "group", None);
 
         let text = match self
             .soundboard
@@ -939,25 +912,26 @@ impl Handler {
             Err(err) => err.to_string(),
         };
         command
-            .create_interaction_response(&ctx, |response| {
-                response
-                    .kind(InteractionResponseType::ChannelMessageWithSource)
-                    .interaction_response_data(|message| message.content(text))
-            })
+            .create_response(
+                &ctx,
+                CreateInteractionResponse::Message(
+                    CreateInteractionResponseMessage::new().content(text),
+                ),
+            )
             .await
             .expect("Cannot send sound's group change error message");
     }
 
-    async fn change_sound_color(&self, ctx: Context, command: ApplicationCommandInteraction) {
+    async fn change_sound_color(&self, ctx: Context, command: CommandInteraction) {
         let Some(guild) = command.guild_id else {
             return;
         };
-        let Some(name) = command::find_string_option(&command, "sound", false, None) else {
+        let Some(name) = command::find_string_option(&command, "sound", None) else {
             return;
         };
-        let group = command::find_string_option(&command, "group", false, None);
+        let group = command::find_string_option(&command, "group", None);
         let Some(color) =
-            command::find_string_option(&command, "color", false, None).map(button::parse_color)
+            command::find_string_option(&command, "color", None).map(button::parse_color)
         else {
             return;
         };
@@ -972,24 +946,25 @@ impl Handler {
             Err(err) => err.to_string(),
         };
         command
-            .create_interaction_response(&ctx, |response| {
-                response
-                    .kind(InteractionResponseType::ChannelMessageWithSource)
-                    .interaction_response_data(|message| message.content(text))
-            })
+            .create_response(
+                &ctx,
+                CreateInteractionResponse::Message(
+                    CreateInteractionResponseMessage::new().content(text),
+                ),
+            )
             .await
             .expect("Cannot send sound's color change error message");
     }
 
-    async fn change_sound_emoji(&self, ctx: Context, command: ApplicationCommandInteraction) {
+    async fn change_sound_emoji(&self, ctx: Context, command: CommandInteraction) {
         let Some(guild) = command.guild_id else {
             return;
         };
-        let Some(name) = command::find_string_option(&command, "sound", false, None) else {
+        let Some(name) = command::find_string_option(&command, "sound", None) else {
             return;
         };
-        let group = command::find_string_option(&command, "group", false, None);
-        let Some(emoji) = command::find_emoji_option(&command, "emoji", false) else {
+        let group = command::find_string_option(&command, "group", None);
+        let Some(emoji) = command::find_emoji_option(&command, "emoji") else {
             return;
         };
 
@@ -1003,39 +978,41 @@ impl Handler {
             Err(err) => err.to_string(),
         };
         command
-            .create_interaction_response(&ctx, |response| {
-                response
-                    .kind(InteractionResponseType::ChannelMessageWithSource)
-                    .interaction_response_data(|message| message.content(text))
-            })
+            .create_response(
+                &ctx,
+                CreateInteractionResponse::Message(
+                    CreateInteractionResponseMessage::new().content(text),
+                ),
+            )
             .await
             .expect("Cannot send sound's emoji change error message");
     }
 
-    async fn sound_id(&self, ctx: Context, command: ApplicationCommandInteraction) {
+    async fn sound_id(&self, ctx: Context, command: CommandInteraction) {
         let Some(guild) = command.guild_id else {
             return;
         };
-        let Some(name) = command::find_string_option(&command, "sound", false, None) else {
+        let Some(name) = command::find_string_option(&command, "sound", None) else {
             return;
         };
-        let group = command::find_string_option(&command, "group", false, None);
+        let group = command::find_string_option(&command, "group", None);
 
         let text = match self.soundboard.get_id(guild, name, group).await {
             Ok(id) => id.to_string(),
             Err(err) => err.to_string(),
         };
         command
-            .create_interaction_response(&ctx, |response| {
-                response
-                    .kind(InteractionResponseType::ChannelMessageWithSource)
-                    .interaction_response_data(|message| message.content(text))
-            })
+            .create_response(
+                &ctx,
+                CreateInteractionResponse::Message(
+                    CreateInteractionResponseMessage::new().content(text),
+                ),
+            )
             .await
             .expect("Cannot send sound ID error message");
     }
 
-    async fn backup_sounds(&self, ctx: Context, command: ApplicationCommandInteraction) {
+    async fn backup_sounds(&self, ctx: Context, command: CommandInteraction) {
         let Some(guild) = command.guild_id else {
             return;
         };
@@ -1044,13 +1021,13 @@ impl Handler {
             Ok((metadata, sounds)) => {
                 if sounds.is_empty() {
                     command
-                        .create_interaction_response(&ctx, |response| {
-                            response
-                                .kind(InteractionResponseType::ChannelMessageWithSource)
-                                .interaction_response_data(|message| {
-                                    message.content("There is no sounds on this server.")
-                                })
-                        })
+                        .create_response(
+                            &ctx,
+                            CreateInteractionResponse::Message(
+                                CreateInteractionResponseMessage::new()
+                                    .content("There is no sounds on this server."),
+                            ),
+                        )
                         .await
                         .expect("Backup response failure");
                     return;
@@ -1093,49 +1070,53 @@ impl Handler {
                         .expect("Failed to create backup archive")
                         .into_inner();
                     command
-                        .create_followup_message(&ctx, |response| {
-                            if too_large > 0 {
-                                response.content("{too_large} files were too large and weren't included in the backup.");
-                            }
-                            response.add_file(AttachmentType::Bytes {
-                                data: Cow::from(archive),
-                                filename: "backup.zip".to_owned(),
-                            })
-                        })
+                        .create_followup(&ctx,
+                                         {
+                                             let mut response = CreateInteractionResponseFollowup::new();
+                                             if too_large > 0 {
+                                                 response = response.content("{too_large} files were too large and weren't included in the backup.");
+                                             }
+                                             response.add_file(
+                                                 CreateAttachment::bytes(
+                                                     archive,
+                                                     "backup.zip"
+                                                 )
+                                             )
+                                         }
+                        )
                         .await
                         .expect("Backup response failure");
                 }
             }
             Err(err) => {
                 command
-                    .create_interaction_response(&ctx, |response| {
-                        response
-                            .kind(InteractionResponseType::ChannelMessageWithSource)
-                            .interaction_response_data(|message| message.content(err.to_string()))
-                    })
+                    .create_response(
+                        &ctx,
+                        CreateInteractionResponse::Message(
+                            CreateInteractionResponseMessage::new().content(err.to_string()),
+                        ),
+                    )
                     .await
                     .expect("Backup response failure");
             }
         }
     }
 
-    async fn soundboard_logs(&self, ctx: Context, command: ApplicationCommandInteraction) {
+    async fn soundboard_logs(&self, ctx: Context, command: CommandInteraction) {
         let Some(guild) = command.guild_id else {
             return;
         };
 
-        let Some(duration) = command::find_duration_option(
-            &command,
-            "duration",
-            false,
-            Some(Duration::from_secs(30)),
-        ) else {
+        let Some(duration) =
+            command::find_duration_option(&command, "duration", Some(Duration::from_secs(30)))
+        else {
             command
-                .create_interaction_response(&ctx, |response| {
-                    response
-                        .kind(InteractionResponseType::ChannelMessageWithSource)
-                        .interaction_response_data(|message| message.content("Invalid duration."))
-                })
+                .create_response(
+                    &ctx,
+                    CreateInteractionResponse::Message(
+                        CreateInteractionResponseMessage::new().content("Invalid duration."),
+                    ),
+                )
                 .await
                 .expect("Logs response failure");
             return;
@@ -1144,64 +1125,62 @@ impl Handler {
         match self.history.get_logs(guild, duration).await {
             Some((resolved_duration, logs)) if !logs.is_empty() => {
                 command
-                    .create_interaction_response(&ctx, |response| {
-                        response
-                            .kind(InteractionResponseType::ChannelMessageWithSource)
-                            .interaction_response_data(|message| {
-                                message
-                                    .content(format!(
-                                        "Soundboard usage for the last {}:\n{}",
-                                        humantime::format_duration(resolved_duration),
-                                        logs.into_iter()
-                                            .map(|(user, count)| format!(
-                                                // Markdown list auto increment number.
-                                                "1. {}: {}",
-                                                Mention::from(user),
-                                                count
-                                            ))
-                                            .join("\n")
-                                    ))
-                                    .allowed_mentions(|mentions| mentions.empty_parse())
-                            })
-                    })
+                    .create_response(
+                        &ctx,
+                        CreateInteractionResponse::Message(
+                            CreateInteractionResponseMessage::new()
+                                .content(format!(
+                                    "Soundboard usage for the last {}:\n{}",
+                                    humantime::format_duration(resolved_duration),
+                                    logs.into_iter()
+                                        .map(|(user, count)| format!(
+                                            // Markdown list auto increment number.
+                                            "1. {}: {}",
+                                            Mention::from(user),
+                                            count
+                                        ))
+                                        .join("\n")
+                                ))
+                                .allowed_mentions(CreateAllowedMentions::new()),
+                        ),
+                    )
                     .await
                     .expect("Logs response failure");
             }
             _ => {
                 command
-                    .create_interaction_response(&ctx, |response| {
-                        response
-                            .kind(InteractionResponseType::ChannelMessageWithSource)
-                            .interaction_response_data(|message| {
-                                message.content("No logs available.")
-                            })
-                    })
+                    .create_response(
+                        &ctx,
+                        CreateInteractionResponse::Message(
+                            CreateInteractionResponseMessage::new().content("No logs available."),
+                        ),
+                    )
                     .await
                     .expect("Logs response failure");
             }
         }
     }
 
-    async fn disconnect_if_alone(&self, ctx: &Context, channel: ChannelId) {
-        let Some(channel) = ctx.cache.guild_channel(channel) else {
-            return;
-        };
-        if channel.kind != ChannelType::Voice {
-            return;
-        }
+    async fn disconnect_if_alone(&self, ctx: &Context, channel_id: ChannelId) {
+        let guild_id = {
+            let Some(channel) = ctx.cache.channel(channel_id) else {
+                return;
+            };
+            if channel.kind != ChannelType::Voice {
+                return;
+            }
 
-        let members = channel
-            .members(&ctx)
-            .await
-            .expect("Cannot fetch member list");
-        if !(members.len() == 1 && members[0].user.id == self.bot_id.load(Ordering::Relaxed)) {
-            return;
-        }
+            let members = channel.members(&ctx).expect("Cannot fetch member list");
+            if !(members.len() == 1 && members[0].user.id == self.bot_id.load(Ordering::Relaxed)) {
+                return;
+            }
+            channel.guild_id
+        };
 
         let manager = songbird::get(ctx)
             .await
             .expect("Failed to get songbird manager");
-        if let Some(call) = manager.get(channel.guild_id) {
+        if let Some(call) = manager.get(guild_id) {
             let mut call_lock = call.lock().await;
             call_lock
                 .leave()
@@ -1213,432 +1192,432 @@ impl Handler {
 
     async fn register_global_commands(&self, ctx: &Context) {
         info!("creating global commands");
-        Command::set_global_application_commands(ctx, |builder| {
-            // Version.
-            builder.create_application_command(|command| {
-                command
-                    .kind(CommandType::ChatInput)
-                    .name("version")
-                    .description("Display version")
-            });
 
-            // Join voice channel.
-            builder.create_application_command(|command| {
-                command
-                    .kind(CommandType::ChatInput)
-                    .name("join")
-                    .description("Join your voice channel")
-            });
+        let version = CreateCommand::new("version")
+            .description("Display version")
+            .kind(CommandType::ChatInput);
+        let join_voice_channel = CreateCommand::new("join")
+            .description("Join your voice channel")
+            .kind(CommandType::ChatInput);
+        let recorder = CreateCommand::new("recorder")
+            .description("Manage the recorder whitelist and download recordings")
+            .kind(CommandType::ChatInput)
+            // List.
+            .add_option(CreateCommandOption::new(
+                CommandOptionType::SubCommand,
+                "list",
+                "Get recorder's whitelist",
+            ))
+            // Join whitelist.
+            .add_option(CreateCommandOption::new(
+                CommandOptionType::SubCommand,
+                "join",
+                "Join recorder's whitelist",
+            ))
+            // Leave whitelist.
+            .add_option(CreateCommandOption::new(
+                CommandOptionType::SubCommand,
+                "leave",
+                "Leave recorder's whitelist",
+            ))
+            // Download recording.
+            .add_option(
+                CreateCommandOption::new(
+                    CommandOptionType::SubCommand,
+                    "download",
+                    "Download a user's recording",
+                )
+                .add_sub_option(
+                    CreateCommandOption::new(
+                        CommandOptionType::User,
+                        "user",
+                        "User to download data for",
+                    )
+                    .required(true),
+                ),
+            )
+            // Download recording chunks.
+            .add_option(
+                CreateCommandOption::new(
+                    CommandOptionType::SubCommand,
+                    "download-chunks",
+                    "Download a user's recording chunks",
+                )
+                .add_sub_option(
+                    CreateCommandOption::new(
+                        CommandOptionType::User,
+                        "user",
+                        "User to download data for",
+                    )
+                    .required(true),
+                )
+                .add_sub_option(
+                    CreateCommandOption::new(
+                        CommandOptionType::Integer,
+                        "count",
+                        "Maximum number of chunks to fetch",
+                    )
+                    .required(false)
+                    .min_int_value(1),
+                )
+                .add_sub_option(
+                    CreateCommandOption::new(
+                        CommandOptionType::String,
+                        "min-duration",
+                        "Minimum duration of chunks",
+                    )
+                    .required(false),
+                ),
+            );
+        let mut soundboard = CreateCommand::new("soundboard")
+            .description("Add, delete or download sounds to/from the soundboard")
+            .kind(CommandType::ChatInput)
+            // List.
+            .add_option(
+                CreateCommandOption::new(
+                    CommandOptionType::SubCommand,
+                    "list",
+                    "List all sounds available on this server",
+                )
+                .add_sub_option(
+                    CreateCommandOption::new(
+                        CommandOptionType::Boolean,
+                        "random",
+                        "Add a random sound button",
+                    )
+                    .required(false),
+                )
+                .add_sub_option(
+                    CreateCommandOption::new(
+                        CommandOptionType::Boolean,
+                        "latest",
+                        "Add a latest sound button",
+                    )
+                    .required(false),
+                ),
+            )
+            // Upload.
+            .add_option(
+                CreateCommandOption::new(CommandOptionType::SubCommand, "upload", "Upload a sound")
+                    .add_sub_option(
+                        CreateCommandOption::new(
+                            CommandOptionType::Attachment,
+                            "sound",
+                            "Sound file",
+                        )
+                        .required(true),
+                    )
+                    .add_sub_option(
+                        CreateCommandOption::new(
+                            CommandOptionType::String,
+                            "name",
+                            "The name of the sound that will appear on the button",
+                        )
+                        .required(true)
+                    )
+                    .add_sub_option(
+                        CreateCommandOption::new(
+                            CommandOptionType::String,
+                            "group",
+                            "The group to add this sound to",
+                        )
+                        .required(true)
+                        .set_autocomplete(true),
+                    )
+                    .add_sub_option(
+                        CreateCommandOption::new(
+                            CommandOptionType::String,
+                            "emoji",
+                            "The emoji to prepend to the button",
+                        )
+                        .required(false),
+                    )
+                    .add_sub_option(
+                        CreateCommandOption::new(
+                            CommandOptionType::String,
+                            "color",
+                            "Color of the button",
+                        )
+                        .required(false)
+                        .add_string_choice("blue", button::as_str(ButtonStyle::Primary))
+                        .add_string_choice("green", button::as_str(ButtonStyle::Success))
+                        .add_string_choice("red", button::as_str(ButtonStyle::Danger))
+                        .add_string_choice("grey", button::as_str(ButtonStyle::Secondary)),
+                    )
+                    .add_sub_option(
+                        CreateCommandOption::new(
+                            CommandOptionType::Integer,
+                            "position",
+                            "The position of the sound in its group",
+                        )
+                        .required(false)
+                        .min_int_value(1),
+                    ),
+            )
+            // Download.
+            .add_option(
+                CreateCommandOption::new(
+                    CommandOptionType::SubCommand,
+                    "download",
+                    "Download a sound",
+                )
+                .add_sub_option(
+                    CreateCommandOption::new(
+                        CommandOptionType::String,
+                        "sound",
+                        "Sound name to download",
+                    )
+                    .required(true)
+                    .set_autocomplete(true),
+                )
+                .add_sub_option(
+                    CreateCommandOption::new(
+                        CommandOptionType::String,
+                        "group",
+                        "Group name of the sound to delete",
+                    )
+                    .required(false)
+                    .set_autocomplete(true),
+                ),
+            )
+            // Rename.
+            .add_option(
+                CreateCommandOption::new(
+                    CommandOptionType::SubCommand,
+                    "rename",
+                    "Change the name of a soundboard button",
+                )
+                .add_sub_option(
+                    CreateCommandOption::new(
+                        CommandOptionType::String,
+                        "sound",
+                        "Sound name to change",
+                    )
+                    .required(true)
+                    .set_autocomplete(true),
+                )
+                .add_sub_option(
+                    CreateCommandOption::new(
+                        CommandOptionType::String,
+                        "new-name",
+                        "New name of the button",
+                    )
+                    .required(true),
+                )
+                .add_sub_option(
+                    CreateCommandOption::new(
+                        CommandOptionType::String,
+                        "group",
+                        "Group name of the button",
+                    )
+                    .required(false)
+                    .set_autocomplete(true),
+                ),
+            )
+            // Move.
+            .add_option(
+                CreateCommandOption::new(
+                    CommandOptionType::SubCommand,
+                    "move",
+                    "Change the group of a soundboard button",
+                )
+                .add_sub_option(
+                    CreateCommandOption::new(
+                        CommandOptionType::String,
+                        "sound",
+                        "Sound name to move",
+                    )
+                    .required(true)
+                    .set_autocomplete(true),
+                )
+                .add_sub_option(
+                    CreateCommandOption::new(
+                        CommandOptionType::String,
+                        "new-group",
+                        "New group of the button",
+                    )
+                    .required(true)
+                    .set_autocomplete(true),
+                )
+                .add_sub_option(
+                    CreateCommandOption::new(
+                        CommandOptionType::String,
+                        "group",
+                        "Group name of the button to modify",
+                    )
+                    .required(false)
+                    .set_autocomplete(true),
+                ),
+            )
+            // Change color.
+            .add_option(
+                CreateCommandOption::new(
+                    CommandOptionType::SubCommand,
+                    "change-color",
+                    "Change the color of a soundboard button",
+                )
+                .add_sub_option(
+                    CreateCommandOption::new(
+                        CommandOptionType::String,
+                        "sound",
+                        "Sound name to change",
+                    )
+                    .required(true)
+                    .set_autocomplete(true),
+                )
+                .add_sub_option(
+                    CreateCommandOption::new(
+                        CommandOptionType::String,
+                        "color",
+                        "New color of the button",
+                    )
+                    .required(true)
+                    .add_string_choice("blue", button::as_str(ButtonStyle::Primary))
+                    .add_string_choice("green", button::as_str(ButtonStyle::Success))
+                    .add_string_choice("red", button::as_str(ButtonStyle::Danger))
+                    .add_string_choice("grey", button::as_str(ButtonStyle::Secondary)),
+                )
+                .add_sub_option(
+                    CreateCommandOption::new(
+                        CommandOptionType::String,
+                        "group",
+                        "Group name of the button to modify",
+                    )
+                    .required(false)
+                    .set_autocomplete(true),
+                ),
+            )
+            // Change Emoji.
+            .add_option(
+                CreateCommandOption::new(
+                    CommandOptionType::SubCommand,
+                    "change-emoji",
+                    "Change the emoji of a soundboard button",
+                )
+                .add_sub_option(
+                    CreateCommandOption::new(
+                        CommandOptionType::String,
+                        "sound",
+                        "Sound name to change",
+                    )
+                    .required(true)
+                    .set_autocomplete(true),
+                )
+                .add_sub_option(
+                    CreateCommandOption::new(
+                        CommandOptionType::String,
+                        "emoji",
+                        "New emoji of the button",
+                    )
+                    .required(true),
+                )
+                .add_sub_option(
+                    CreateCommandOption::new(
+                        CommandOptionType::String,
+                        "group",
+                        "Group name of the button to modify",
+                    )
+                    .required(false)
+                    .set_autocomplete(true),
+                ),
+            )
+            // ID.
+            .add_option(
+                CreateCommandOption::new(
+                    CommandOptionType::SubCommand,
+                    "id",
+                    "Get the ID of a sound",
+                )
+                .add_sub_option(
+                    CreateCommandOption::new(
+                        CommandOptionType::String,
+                        "sound",
+                        "Sound name to fetch",
+                    )
+                    .required(true)
+                    .set_autocomplete(true),
+                )
+                .add_sub_option(
+                    CreateCommandOption::new(
+                        CommandOptionType::String,
+                        "group",
+                        "Group name of the sound to fetch",
+                    )
+                    .required(false)
+                    .set_autocomplete(true),
+                ),
+            )
+            // Backup.
+            .add_option(CreateCommandOption::new(
+                CommandOptionType::SubCommand,
+                "backup",
+                "Download all sounds and metadata as a zip archive",
+            ))
+            // Logs.
+            .add_option(
+                CreateCommandOption::new(
+                    CommandOptionType::SubCommand,
+                    "logs",
+                    "Get latest usage of the soundboard in this channel",
+                )
+                .add_sub_option(
+                    CreateCommandOption::new(
+                        CommandOptionType::String,
+                        "duration",
+                        "Logs aggregation duration",
+                    )
+                    .required(false),
+                ),
+            );
+        if self.allow_delete {
+            soundboard = soundboard.add_option(
+                CreateCommandOption::new(
+                    CommandOptionType::SubCommand,
+                    "delete",
+                    "Delete a sound from the soundboard",
+                )
+                .add_sub_option(
+                    CreateCommandOption::new(
+                        CommandOptionType::String,
+                        "sound",
+                        "Sound name to delete",
+                    )
+                    .required(true)
+                    .set_autocomplete(true),
+                )
+                .add_sub_option(
+                    CreateCommandOption::new(
+                        CommandOptionType::String,
+                        "group",
+                        "Group name of the sound to delete",
+                    )
+                    .required(false)
+                    .set_autocomplete(true),
+                ),
+            );
+        }
 
-            // Recorder.
-            builder.create_application_command(|command| {
-                command
-                    .kind(CommandType::ChatInput)
-                    .name("recorder")
-                    .description("Manage the recorder whitelist and download recordings");
-
-                // List.
-                command.create_option(|subcommand| {
-                    subcommand
-                        .kind(CommandOptionType::SubCommand)
-                        .name("list")
-                        .description("Get recorder's whitelist")
-                });
-
-                // Join whitelist.
-                command.create_option(|subcommand| {
-                    subcommand
-                        .kind(CommandOptionType::SubCommand)
-                        .name("join")
-                        .description("Join recorder whitelist")
-                });
-
-                // Leave whitelist.
-                command.create_option(|subcommand| {
-                    subcommand
-                        .kind(CommandOptionType::SubCommand)
-                        .name("leave")
-                        .description("Leave recorder whitelist")
-                });
-
-                // Download recording.
-                command.create_option(|subcommand| {
-                    subcommand
-                        .kind(CommandOptionType::SubCommand)
-                        .name("download")
-                        .description("Download a user's recording")
-                        .create_sub_option(|option| {
-                            option
-                                .kind(CommandOptionType::User)
-                                .name("user")
-                                .description("User to download data for")
-                                .required(true)
-                        })
-                });
-
-                // Download recording chunks.
-                command.create_option(|subcommand| {
-                    subcommand
-                        .kind(CommandOptionType::SubCommand)
-                        .name("download-chunks")
-                        .description("Download a user's recording chunks")
-                        .create_sub_option(|option| {
-                            option
-                                .kind(CommandOptionType::User)
-                                .name("user")
-                                .description("User to download data for")
-                                .required(true)
-                        })
-                        .create_sub_option(|option| {
-                            option
-                                .kind(CommandOptionType::Integer)
-                                .name("count")
-                                .description("Maximum number of chunks to fetch")
-                                .required(false)
-                                .min_int_value(1)
-                        })
-                        .create_sub_option(|option| {
-                            option
-                                .kind(CommandOptionType::String)
-                                .name("min-duration")
-                                .description("Minimum duration of chunks")
-                                .required(false)
-                        })
-                })
-            });
-
-            // Soundboard.
-            builder.create_application_command(|command| {
-                command
-                    .kind(CommandType::ChatInput)
-                    .name("soundboard")
-                    .description("Add, delete or download sounds to/from the soundboard");
-
-                // List.
-                command.create_option(|subcommand| {
-                    subcommand
-                        .kind(CommandOptionType::SubCommand)
-                        .name("list")
-                        .description("List all sounds available on this server")
-                        .create_sub_option(|option| {
-                            option
-                                .kind(CommandOptionType::Boolean)
-                                .name("random")
-                                .description("Add a random sound button")
-                                .required(false)
-                        })
-                        .create_sub_option(|option| {
-                            option
-                                .kind(CommandOptionType::Boolean)
-                                .name("latest")
-                                .description("Add a latest sound button")
-                                .required(false)
-                        })
-                });
-
-                // Upload.
-                command.create_option(|subcommand| {
-                    subcommand
-                        .kind(CommandOptionType::SubCommand)
-                        .name("upload")
-                        .description("Upload a sound")
-                        .create_sub_option(|option| {
-                            option
-                                .kind(CommandOptionType::Attachment)
-                                .name("sound")
-                                .description("WAV sound file")
-                                .required(true)
-                        })
-                        .create_sub_option(|option| {
-                            option
-                                .kind(CommandOptionType::String)
-                                .name("name")
-                                .description("The name of the sound that will appear on the button")
-                                .required(true)
-                        })
-                        .create_sub_option(|option| {
-                            option
-                                .kind(CommandOptionType::String)
-                                .name("group")
-                                .description("The group to add this sound to")
-                                .required(true)
-                                .set_autocomplete(true)
-                        })
-                        .create_sub_option(|option| {
-                            option
-                                .kind(CommandOptionType::String)
-                                .name("emoji")
-                                .description("The emoji to prepend to the button")
-                                .required(false)
-                        })
-                        .create_sub_option(|option| {
-                            option
-                                .kind(CommandOptionType::String)
-                                .name("color")
-                                .description("Color of the button")
-                                .required(false)
-                                .add_string_choice("blue", button::as_str(ButtonStyle::Primary))
-                                .add_string_choice("green", button::as_str(ButtonStyle::Success))
-                                .add_string_choice("red", button::as_str(ButtonStyle::Danger))
-                                .add_string_choice("grey", button::as_str(ButtonStyle::Secondary))
-                        })
-                        .create_sub_option(|option| {
-                            option
-                                .kind(CommandOptionType::Integer)
-                                .name("position")
-                                .description("The position of the sound in its group")
-                                .required(false)
-                                .min_int_value(1)
-                        })
-                });
-
-                // Download.
-                command.create_option(|subcommand| {
-                    subcommand
-                        .kind(CommandOptionType::SubCommand)
-                        .name("download")
-                        .description("Download a sound")
-                        .create_sub_option(|option| {
-                            option
-                                .kind(CommandOptionType::String)
-                                .name("sound")
-                                .description("Sound name to download")
-                                .required(true)
-                                .set_autocomplete(true)
-                        })
-                        .create_sub_option(|option| {
-                            option
-                                .kind(CommandOptionType::String)
-                                .name("group")
-                                .description("Group name of the sound to delete")
-                                .required(false)
-                                .set_autocomplete(true)
-                        })
-                });
-
-                // Delete.
-                if self.allow_delete {
-                    command.create_option(|subcommand| {
-                        subcommand
-                            .kind(CommandOptionType::SubCommand)
-                            .name("delete")
-                            .description("Delete a sound from the soundboard")
-                            .create_sub_option(|option| {
-                                option
-                                    .kind(CommandOptionType::String)
-                                    .name("sound")
-                                    .description("Sound name to delete")
-                                    .required(true)
-                                    .set_autocomplete(true)
-                            })
-                            .create_sub_option(|option| {
-                                option
-                                    .kind(CommandOptionType::String)
-                                    .name("group")
-                                    .description("Group name of the sound to delete")
-                                    .required(false)
-                                    .set_autocomplete(true)
-                            })
-                    });
-                }
-
-                // Rename.
-                command.create_option(|subcommand| {
-                    subcommand
-                        .kind(CommandOptionType::SubCommand)
-                        .name("rename")
-                        .description("Change the name of a soundboard button")
-                        .create_sub_option(|option| {
-                            option
-                                .kind(CommandOptionType::String)
-                                .name("sound")
-                                .description("Sound name to change")
-                                .required(true)
-                                .set_autocomplete(true)
-                        })
-                        .create_sub_option(|option| {
-                            option
-                                .kind(CommandOptionType::String)
-                                .name("new-name")
-                                .description("New name of the button")
-                                .required(true)
-                        })
-                        .create_sub_option(|option| {
-                            option
-                                .kind(CommandOptionType::String)
-                                .name("group")
-                                .description("Group name of the sound to modify")
-                                .required(false)
-                                .set_autocomplete(true)
-                        })
-                });
-
-                // Move.
-                command.create_option(|subcommand| {
-                    subcommand
-                        .kind(CommandOptionType::SubCommand)
-                        .name("move")
-                        .description("Change the group of a soundboard button")
-                        .create_sub_option(|option| {
-                            option
-                                .kind(CommandOptionType::String)
-                                .name("sound")
-                                .description("Sound name to change")
-                                .required(true)
-                                .set_autocomplete(true)
-                        })
-                        .create_sub_option(|option| {
-                            option
-                                .kind(CommandOptionType::String)
-                                .name("new-group")
-                                .description("New group of the button")
-                                .required(true)
-                                .set_autocomplete(true)
-                        })
-                        .create_sub_option(|option| {
-                            option
-                                .kind(CommandOptionType::String)
-                                .name("group")
-                                .description("Group name of the sound to modify")
-                                .required(false)
-                                .set_autocomplete(true)
-                        })
-                });
-
-                // Change color.
-                command.create_option(|subcommand| {
-                    subcommand
-                        .kind(CommandOptionType::SubCommand)
-                        .name("change-color")
-                        .description("Change the color of a soundboard button")
-                        .create_sub_option(|option| {
-                            option
-                                .kind(CommandOptionType::String)
-                                .name("sound")
-                                .description("Sound name to change")
-                                .required(true)
-                                .set_autocomplete(true)
-                        })
-                        .create_sub_option(|option| {
-                            option
-                                .kind(CommandOptionType::String)
-                                .name("color")
-                                .description("New color of the button")
-                                .required(true)
-                                .add_string_choice("blue", button::as_str(ButtonStyle::Primary))
-                                .add_string_choice("green", button::as_str(ButtonStyle::Success))
-                                .add_string_choice("red", button::as_str(ButtonStyle::Danger))
-                                .add_string_choice("grey", button::as_str(ButtonStyle::Secondary))
-                        })
-                        .create_sub_option(|option| {
-                            option
-                                .kind(CommandOptionType::String)
-                                .name("group")
-                                .description("Group name of the sound to modify")
-                                .required(false)
-                                .set_autocomplete(true)
-                        })
-                });
-
-                // Change emoji.
-                command.create_option(|subcommand| {
-                    subcommand
-                        .kind(CommandOptionType::SubCommand)
-                        .name("change-emoji")
-                        .description("Change the emoji of a soundboard button")
-                        .create_sub_option(|option| {
-                            option
-                                .kind(CommandOptionType::String)
-                                .name("sound")
-                                .description("Sound name to change")
-                                .required(true)
-                                .set_autocomplete(true)
-                        })
-                        .create_sub_option(|option| {
-                            option
-                                .kind(CommandOptionType::String)
-                                .name("emoji")
-                                .description("New emoji of the button")
-                                .required(true)
-                        })
-                        .create_sub_option(|option| {
-                            option
-                                .kind(CommandOptionType::String)
-                                .name("group")
-                                .description("Group name of the sound to modify")
-                                .required(false)
-                                .set_autocomplete(true)
-                        })
-                });
-
-                // ID.
-                command.create_option(|subcommand| {
-                    subcommand
-                        .kind(CommandOptionType::SubCommand)
-                        .name("id")
-                        .description("Get the ID of a sound")
-                        .create_sub_option(|option| {
-                            option
-                                .kind(CommandOptionType::String)
-                                .name("sound")
-                                .description("Sound name to fetch")
-                                .required(true)
-                                .set_autocomplete(true)
-                        })
-                        .create_sub_option(|option| {
-                            option
-                                .kind(CommandOptionType::String)
-                                .name("group")
-                                .description("Group name of the sound to fetch")
-                                .required(false)
-                                .set_autocomplete(true)
-                        })
-                });
-
-                // Backup.
-                command.create_option(|subcommand| {
-                    subcommand
-                        .kind(CommandOptionType::SubCommand)
-                        .name("backup")
-                        .description("Download all sounds and metadata as a zip archive")
-                });
-
-                // Logs.
-                command.create_option(|subcommand| {
-                    subcommand
-                        .kind(CommandOptionType::SubCommand)
-                        .name("logs")
-                        .description("Get latest usage of the soundboard in this channel")
-                        .create_sub_option(|option| {
-                            option
-                                .kind(CommandOptionType::String)
-                                .name("duration")
-                                .description("Logs aggregation duration")
-                                .required(false)
-                        })
-                })
-            })
-        })
-        .await
-        .expect("Global commands creation failure");
+        Command::set_global_commands(ctx, vec![version, join_voice_channel, recorder, soundboard])
+            .await
+            .expect("Global commands creation failure");
         info!("global commands created");
     }
 }
 
-async fn find_voice_channel<HC: AsRef<Http> + AsRef<Cache>>(
-    hc: HC,
+async fn find_voice_channel<H: AsRef<Http>, C: AsRef<Cache>>(
+    http: H,
+    cache: C,
     guild: GuildId,
     user: UserId,
 ) -> Option<ChannelId> {
     for (id, channel) in guild
-        .channels(&hc)
+        .channels(http)
         .await
         .expect("Failed to fetch channels list")
     {
         if channel.kind == ChannelType::Voice {
             let members = channel
-                .members(&hc)
-                .await
+                .members(&cache)
                 .expect("Failed to fetch channel members");
             if members.iter().any(|m| m.user.id == user) {
                 return Some(id);
@@ -1648,22 +1627,12 @@ async fn find_voice_channel<HC: AsRef<Http> + AsRef<Cache>>(
     None
 }
 
-fn parse_subcommand(command: &ApplicationCommandInteraction) -> Option<&str> {
+fn parse_subcommand(command: &CommandInteraction) -> Option<&str> {
     let first_option = command.data.options.first()?;
-    if first_option.kind != CommandOptionType::SubCommand {
+    if first_option.kind() != CommandOptionType::SubCommand {
         return None;
     };
     Some(&first_option.name)
-}
-
-fn find_autocompleting(options: &[CommandDataOption]) -> Option<(&str, &CommandDataOptionValue)> {
-    options.iter().find_map(|option| {
-        if option.focused {
-            option.resolved.as_ref().map(|v| (option.name.as_str(), v))
-        } else {
-            find_autocompleting(&option.options)
-        }
-    })
 }
 
 async fn play_sound(
@@ -1672,7 +1641,7 @@ async fn play_sound(
     guild: GuildId,
     sound: Ulid,
 ) -> bool {
-    let Some(mut data) = soundboard.get_wav(sound).await else {
+    let Some(wav) = soundboard.get_wav(sound).await else {
         return false;
     };
 
@@ -1684,21 +1653,14 @@ async fn play_sound(
         return false;
     }
 
-    wav::remove_header(&mut data);
-    call_guard.play_source(Input::new(
-        false,
-        Reader::from_memory(data),
-        Codec::Pcm,
-        Container::Raw,
-        None,
-    ));
-
+    call_guard.play_input(Input::from(wav));
     true
 }
 
 #[derive(FromRef, Clone)]
-struct HttpState {
-    http_cache: Arc<CacheAndHttp>,
+struct ApiState {
+    http: Arc<Http>,
+    cache: Arc<Cache>,
     songbird: Arc<Songbird>,
     recorder: Arc<Mutex<Recorder>>,
     soundboard: Arc<Soundboard>,
@@ -1721,7 +1683,7 @@ async fn join_channel_http(
         Event::Core(CoreEvent::SpeakingStateUpdate),
         recorder.clone(),
     );
-    call_lock.add_global_event(Event::Core(CoreEvent::VoicePacket), recorder);
+    call_lock.add_global_event(Event::Core(CoreEvent::VoiceTick), recorder);
 
     let handle = call_lock
         .join(channel)
@@ -1734,12 +1696,13 @@ async fn join_channel_http(
 }
 
 async fn join_channel_user_http(
-    State(http_cache): State<Arc<CacheAndHttp>>,
+    State(http): State<Arc<Http>>,
+    State(cache): State<Arc<Cache>>,
     State(songbird): State<Arc<Songbird>>,
     State(recorder): State<Arc<Mutex<Recorder>>>,
     Path((guild, user)): Path<(GuildId, UserId)>,
 ) -> StatusCode {
-    let Some(channel) = find_voice_channel(http_cache.as_ref(), guild, user).await else {
+    let Some(channel) = find_voice_channel(http, cache, guild, user).await else {
         return StatusCode::NOT_FOUND;
     };
     join_channel_http(State(songbird), State(recorder), Path((guild, channel))).await
@@ -1836,7 +1799,9 @@ async fn main() -> ExitCode {
 
     let history = Arc::new(History::default());
 
-    let intents = GatewayIntents::GUILDS | GatewayIntents::GUILD_VOICE_STATES;
+    let intents = GatewayIntents::GUILDS
+        | GatewayIntents::GUILD_PRESENCES
+        | GatewayIntents::GUILD_VOICE_STATES;
     let songbird =
         Songbird::serenity_from_config(songbird::Config::default().decode_mode(DecodeMode::Decode));
     let mut client = Client::builder(options.discord_token, intents)
@@ -1886,8 +1851,9 @@ async fn main() -> ExitCode {
                 "/guilds/:guild/sounds/last-played/:offset/play",
                 routing::post(play_last_played_offset_sound_http),
             )
-            .with_state(HttpState {
-                http_cache: Arc::clone(&client.cache_and_http),
+            .with_state(ApiState {
+                http: Arc::clone(&client.http),
+                cache: Arc::clone(&client.cache),
                 songbird,
                 recorder,
                 soundboard,

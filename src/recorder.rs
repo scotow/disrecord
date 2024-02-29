@@ -58,7 +58,7 @@ impl Recorder {
             .map(|file| {
                 file.chunks(mem::size_of::<u64>())
                     .map(|l| {
-                        UserId(u64::from_be_bytes(
+                        UserId::new(u64::from_be_bytes(
                             l.try_into().expect("Invalid whitelist user id"),
                         ))
                     })
@@ -90,7 +90,7 @@ impl Recorder {
                 .open(&self.whitelist_path)
                 .await
                 .expect("Cannot create whitelist file");
-            file.write_u64(*user.as_u64())
+            file.write_u64(user.get())
                 .await
                 .expect("Cannot append user id to whitelist");
 
@@ -116,7 +116,7 @@ impl Recorder {
                     &self
                         .whitelist
                         .iter()
-                        .flat_map(|user| user.as_u64().to_be_bytes())
+                        .flat_map(|user| user.get().to_be_bytes())
                         .collect::<Vec<_>>(),
                 )
                 .await

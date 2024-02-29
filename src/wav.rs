@@ -20,6 +20,7 @@ pub fn package(pcm: &[i16]) -> Vec<u8> {
 
 /// Package i16 LE PCM data into a WAV container by prepending the buffer with a
 /// header.
+#[allow(dead_code)]
 pub fn package_mut_raw(data: &mut Vec<u8>) {
     data.reserve_exact(HEADER_SIZE);
     write_header(data, data.len());
@@ -34,15 +35,17 @@ fn write_header(buffer: &mut Vec<u8>, pcm_len: usize) {
     buffer.extend_from_slice(&((pcm_len as u32).to_le_bytes())); // PCM data length
 }
 
+// TODO: use Bytes to remove usage of rotate_left while keeping AsRef<u8> impl.
 /// Remove the WAV header while keeping its payload unchanged (little endian).
 /// Panics if the vec is not long enough to have PCM data.
+#[allow(dead_code)]
 pub fn remove_header(wav: &mut Vec<u8>) {
     wav.rotate_left(HEADER_SIZE);
     wav.truncate(wav.len() - HEADER_SIZE);
 }
 
 /// Validates that the data are a valid WAV containing PCM i16 LE data.
-pub fn is_valid(data: &[u8]) -> bool {
+pub fn is_valid_pcm_s16le(data: &[u8]) -> bool {
     if data.len() < HEADER_SIZE || data.len() - HEADER_SIZE % 2 == 1 {
         return false;
     }
@@ -99,8 +102,8 @@ mod tests {
         data.extend(pcm.iter().flat_map(|n| n.to_le_bytes()));
 
         assert_eq!(super::package(&pcm), data);
-        assert!(super::is_valid(&data));
-        assert!(super::is_valid(&super::package(&pcm)));
+        assert!(super::is_valid_pcm_s16le(&data));
+        assert!(super::is_valid_pcm_s16le(&super::package(&pcm)));
     }
 
     #[test]
@@ -127,7 +130,7 @@ mod tests {
 
     #[test]
     fn validate() {
-        assert!(super::is_valid(include_bytes!("hello.wav")));
+        assert!(super::is_valid_pcm_s16le(include_bytes!("hello.wav")));
     }
 
     #[test]
