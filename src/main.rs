@@ -1313,7 +1313,7 @@ impl Handler {
                             "name",
                             "The name of the sound that will appear on the button",
                         )
-                        .required(true)
+                        .required(true),
                     )
                     .add_sub_option(
                         CreateCommandOption::new(

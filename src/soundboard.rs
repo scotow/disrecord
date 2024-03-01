@@ -10,6 +10,7 @@ use std::{
 
 use bincode::Options;
 use itertools::Itertools;
+use log::info;
 use rand::seq::IteratorRandom;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -69,6 +70,7 @@ impl Soundboard {
                 sounds
             })
             .unwrap_or_default();
+        info!("loaded {} sounds", sounds.len());
 
         Self {
             metadata_path,
