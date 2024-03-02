@@ -41,6 +41,9 @@ Some actions can also be trigger using HTTP calls to allow scripting:
 # Play a specific sound:
 /guilds/:guild/sounds/:sound/play
 
+# Play a random sound among a list:
+/guilds/:guild/sounds/:sound|:sound.../play
+
 # Play a random sound from the soundboard:
 /guilds/:guild/sounds/random/play
 
