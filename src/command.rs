@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use regex::Regex;
 use serenity::{
-    all::{ResolvedOption, ResolvedValue},
+    all::{Context, GuildId, ResolvedOption, ResolvedValue},
     model::{application::CommandInteraction, channel::Attachment, user::User},
 };
 
@@ -21,24 +21,6 @@ fn find_option<'a>(command: &'a CommandInteraction, name: &str) -> Option<Resolv
         None
     }
     browse(command.data.options(), name)
-
-    // dbg!(&command.data.options, &command.data.resolved);
-    // command
-    //     .data
-    //     .options()
-    //     .into_iter()
-    //     .find(|opt| opt.name == name)
-    //     .map(|opt| opt.value)
-
-    // let options = if top_level {
-    //     &command.data.options
-    // } else {
-    //     &command.data.options.first()?.options
-    // };
-    // options
-    //     .iter()
-    //     .find(|opt| opt.name == name)
-    //     .and_then(|opt| opt.resolved.as_ref())
 }
 
 pub fn find_string_option<'a>(
@@ -115,4 +97,11 @@ pub fn find_duration_option(
         Some(s) => parse_duration::parse(s).ok(),
         None => default,
     }
+}
+
+pub async fn resolve_username(ctx: &Context, user: &User, guild: GuildId) -> String {
+    user.nick_in(ctx, guild)
+        .await
+        .or_else(|| user.global_name.clone())
+        .unwrap_or_else(|| user.name.clone())
 }

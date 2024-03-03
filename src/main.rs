@@ -436,6 +436,7 @@ impl Handler {
             .send(RecorderAction::GetVoiceData(requested_user.id, tx))
             .expect("Download request failure");
 
+        let username = command::resolve_username(&ctx, &requested_user, guild).await;
         let data = rx.await.expect("Voice data fetching error");
         match data.map(Vec::from) {
             Some(data) => {
@@ -445,9 +446,9 @@ impl Handler {
                     .enumerate()
                 {
                     let filename = if data.len() <= (MAX_FILE_SIZE - wav::HEADER_SIZE) / 2 {
-                        format!("{}.wav", requested_user)
+                        format!("{}.wav", username)
                     } else {
-                        format!("{}-{}.wav", requested_user, i + 1)
+                        format!("{}-{}.wav", username, i + 1)
                     };
 
                     command
@@ -522,11 +523,11 @@ impl Handler {
             ))
             .expect("Download request failure");
 
+        let username = command::resolve_username(&ctx, &requested_user, guild).await;
         let data = rx.await.expect("Voice data fetching error");
         match data {
             Some(data) => {
                 command.defer(&ctx).await.expect("Download defer failed");
-                let count = data.len();
                 for (group_index, chunks) in data.chunks(MAX_ATTACHEMENTS_PER_MESSAGE).enumerate() {
                     command
                         .create_followup(
@@ -535,14 +536,14 @@ impl Handler {
                                 chunks.into_iter().enumerate().map(|(i, chunk)| {
                                     CreateAttachment::bytes(
                                         wav::package(&chunk),
-                                        if count > 1 {
+                                        if data.len() > 1 {
                                             format!(
                                                 "{}-{}.wav",
-                                                requested_user,
+                                                username,
                                                 group_index * MAX_ATTACHEMENTS_PER_MESSAGE + i + 1
                                             )
                                         } else {
-                                            format!("{}.wav", requested_user)
+                                            format!("{}.wav", username)
                                         },
                                     )
                                 }),
