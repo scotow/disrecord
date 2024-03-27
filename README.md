@@ -100,7 +100,7 @@ cargo run -- [OPTIONS]
 If you prefer to run Disrecord as a Docker container, you can either build the image yourself using the Dockerfile available in this repo, or you can use the [image](https://github.com/scotow/disrecord/pkgs/container/disrecord%2Fdisrecord) built by the GitHub action.
 
 ```
-docker run -v disrecord:/disrecord ghcr.io/scotow/disrecord/disrecord:latest -t DISCORD_TOKEN -w /disrecord/record-whitelist -s /disrecord/soundboard -S /disrecord
+docker run -v disrecord:/data ghcr.io/scotow/disrecord/disrecord:latest -t DISCORD_TOKEN -w /data/record-whitelist -s /data/soundboard -S /data
 ```
 
 ### Binding to all interfaces
