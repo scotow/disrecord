@@ -1,3 +1,5 @@
+#![warn(unused_crate_dependencies)]
+
 use std::{
     collections::{HashSet, VecDeque},
     io::{Cursor, Write},
@@ -40,6 +42,7 @@ use songbird::EventHandler as VoiceEventHandler;
 use songbird::{
     driver::DecodeMode, input::Input, CoreEvent, Event, EventContext, SerenityInit, Songbird,
 };
+use symphonia as _;
 use tokio::sync::{mpsc::UnboundedSender, oneshot, Mutex};
 use ulid::Ulid;
 use zip::{write::FileOptions as ZipFileOptions, ZipWriter};
