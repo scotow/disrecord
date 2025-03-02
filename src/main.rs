@@ -6,18 +6,19 @@ use std::{
     net::SocketAddr,
     process::ExitCode,
     sync::{
-        atomic::{AtomicU64, Ordering},
         Arc,
+        atomic::{AtomicU64, Ordering},
     },
     time::Duration,
 };
 
-use axum::{http::StatusCode, Server};
+use axum::http::StatusCode;
 use clap::Parser;
 use env_logger::Builder;
 use itertools::Itertools;
 use log::{error, info, warn};
 use serenity::{
+    Client,
     all::{
         AutocompleteChoice, ButtonStyle, ChannelId, ChannelType, Command, CommandInteraction,
         CommandOptionType, CommandType, ComponentInteraction, CreateAllowedMentions,
@@ -31,7 +32,6 @@ use serenity::{
     client::{Context, EventHandler},
     http::Http,
     prelude::{GatewayIntents, SerenityError},
-    Client,
 };
 // use songbird::{
 //     driver::DecodeMode,
@@ -40,12 +40,15 @@ use serenity::{
 // Songbird, };
 use songbird::EventHandler as VoiceEventHandler;
 use songbird::{
-    driver::DecodeMode, input::Input, CoreEvent, Event, EventContext, SerenityInit, Songbird,
+    CoreEvent, Event, EventContext, SerenityInit, Songbird, driver::DecodeMode, input::Input,
 };
 use symphonia as _;
-use tokio::sync::{mpsc::UnboundedSender, oneshot, Mutex};
+use tokio::{
+    net::TcpListener,
+    sync::{Mutex, mpsc::UnboundedSender, oneshot},
+};
 use ulid::Ulid;
-use zip::{write::FileOptions as ZipFileOptions, ZipWriter};
+use zip::{ZipWriter, write::FileOptions as ZipFileOptions};
 
 use crate::{
     api::ApiState,
@@ -97,11 +100,15 @@ impl EventHandler for Handler {
     }
 
     async fn voice_state_update(&self, ctx: Context, old: Option<VoiceState>, new: VoiceState) {
-        if let Some(channel) = old.and_then(|c| c.channel_id) {
-            self.disconnect_if_alone(&ctx, channel).await;
+        let Some(guild_id) = old.as_ref().and_then(|vs| vs.guild_id).or(new.guild_id) else {
+            return;
+        };
+
+        if let Some(channel) = old.and_then(|vs| vs.channel_id) {
+            self.disconnect_if_alone(&ctx, guild_id, channel).await;
         }
         if let Some(channel) = new.channel_id {
-            self.disconnect_if_alone(&ctx, channel).await;
+            self.disconnect_if_alone(&ctx, guild_id, channel).await;
         }
     }
 
@@ -739,10 +746,10 @@ impl Handler {
                             .expect("Failed to delete sound due to error");
                         let err_msg = match err {
                             SerenityError::Http(http_error) => match http_error {
-                                HttpError::UnsuccessfulRequest(req) => {
-                                    if req.status_code == StatusCode::BAD_REQUEST
-                                        && req.error.code == INVALID_EMOJI_CODE
-                                        && req.error.errors.into_iter().any(|sub_error| {
+                                HttpError::UnsuccessfulRequest(resp) => {
+                                    if resp.status_code.as_u16() == StatusCode::BAD_REQUEST
+                                        && resp.error.code == INVALID_EMOJI_CODE
+                                        && resp.error.errors.into_iter().any(|sub_error| {
                                             sub_error.code == INVALID_EMOJI_MESSAGE
                                         })
                                     {
@@ -758,7 +765,7 @@ impl Handler {
                                             .expect("Cannot send sound creation emoji error");
                                         "Uncaught invalid emoji".to_owned()
                                     } else {
-                                        format!("Different status code: {}", req.error.code)
+                                        format!("Different status code: {}", resp.error.code)
                                     }
                                 }
                                 err => err.to_string(),
@@ -1163,9 +1170,12 @@ impl Handler {
         }
     }
 
-    async fn disconnect_if_alone(&self, ctx: &Context, channel_id: ChannelId) {
-        let guild_id = {
-            let Some(channel) = ctx.cache.channel(channel_id) else {
+    async fn disconnect_if_alone(&self, ctx: &Context, guild_id: GuildId, channel_id: ChannelId) {
+        {
+            let Some(guild) = ctx.cache.guild(guild_id) else {
+                return;
+            };
+            let Some(channel) = guild.channels.get(&channel_id) else {
                 return;
             };
             if channel.kind != ChannelType::Voice {
@@ -1176,8 +1186,7 @@ impl Handler {
             if !(members.len() == 1 && members[0].user.id == self.bot_id.load(Ordering::Relaxed)) {
                 return;
             }
-            channel.guild_id
-        };
+        }
 
         let manager = songbird::get(ctx)
             .await
@@ -1667,6 +1676,9 @@ async fn main() -> ExitCode {
         .parse_default_env()
         .init();
     log_panics::init();
+    rustls::crypto::aws_lc_rs::default_provider()
+        .install_default()
+        .expect("failed to setup tls provider");
 
     let recorder = Arc::new(Mutex::new(
         Recorder::new(
@@ -1710,11 +1722,14 @@ async fn main() -> ExitCode {
         .await
         .expect("Error creating client");
 
-    let server = Server::bind(&SocketAddr::new(
+    let listener = TcpListener::bind(SocketAddr::new(
         options.soundboard_http_address,
         options.soundboard_http_port,
     ))
-    .serve(
+    .await
+    .expect("Could not bind socket");
+    let server = axum::serve(
+        listener,
         api::router(ApiState {
             http: Arc::clone(&client.http),
             cache: Arc::clone(&client.cache),
@@ -1722,8 +1737,7 @@ async fn main() -> ExitCode {
             recorder,
             soundboard,
             history,
-        })
-        .into_make_service(),
+        }),
     );
 
     info!("starting disrecord bot");

@@ -1,18 +1,19 @@
 use std::sync::Arc;
 
 use axum::{
+    Router,
     extract::{FromRef, Path, State},
     http::StatusCode,
-    routing, Router,
+    routing,
 };
-use rand::{seq::IteratorRandom, thread_rng};
+use rand::seq::IteratorRandom;
 use serenity::all::{Cache, ChannelId, GuildId, Http, UserId};
 use songbird::{CoreEvent, Event, Songbird};
 use tokio::sync::Mutex;
 use ulid::Ulid;
 
 use crate::{
-    find_voice_channel, history::History, recorder::Recorder, soundboard::Soundboard, VoiceHandler,
+    VoiceHandler, find_voice_channel, history::History, recorder::Recorder, soundboard::Soundboard,
 };
 
 #[derive(FromRef, Clone)]
@@ -73,7 +74,7 @@ async fn play_sound(
 ) -> StatusCode {
     let Some(selected) = sounds
         .split('|')
-        .choose(&mut thread_rng())
+        .choose(&mut rand::rng())
         .and_then(|s| s.parse().ok())
     else {
         return StatusCode::BAD_REQUEST;
@@ -146,31 +147,31 @@ async fn play_sound_id(
 pub fn router(state: ApiState) -> Router {
     Router::new()
         .route(
-            "/guilds/:guild/channels/:channel/join",
+            "/guilds/{guild}/channels/{channel}/join",
             routing::post(join_channel),
         )
         .route(
-            "/guilds/:guild/users/:user/follow",
+            "/guilds/{guild}/users/{user}/follow",
             routing::post(join_user_channel),
         )
         .route(
-            "/guilds/:guild/sounds/:sound/play",
+            "/guilds/{guild}/sounds/{sound}/play",
             routing::post(play_sound),
         )
         .route(
-            "/guilds/:guild/sounds/random/play",
+            "/guilds/{guild}/sounds/random/play",
             routing::post(play_random_sound),
         )
         .route(
-            "/guilds/:guild/sounds/latest/play",
+            "/guilds/{guild}/sounds/latest/play",
             routing::post(play_latest_sound),
         )
         .route(
-            "/guilds/:guild/sounds/last-played/play",
+            "/guilds/{guild}/sounds/last-played/play",
             routing::post(play_last_played_sound),
         )
         .route(
-            "/guilds/:guild/sounds/last-played/:offset/play",
+            "/guilds/{guild}/sounds/last-played/{offset}/play",
             routing::post(play_last_played_offset_sound),
         )
         .with_state(state)

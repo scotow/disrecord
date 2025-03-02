@@ -1,5 +1,5 @@
 use std::{
-    collections::{hash_map::DefaultHasher, HashMap},
+    collections::{HashMap, hash_map::DefaultHasher},
     ffi::OsStr,
     hash::{Hash, Hasher},
     path::{Path, PathBuf},
@@ -14,7 +14,7 @@ use log::info;
 use rand::seq::IteratorRandom;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use serenity::{
     all::ButtonStyle,
     model::{channel::Attachment, id::GuildId},
@@ -605,7 +605,7 @@ impl Soundboard {
             .await
             .values()
             .filter_map(|sound| (sound.metadata.guild == guild.get()).then_some(sound.metadata.id))
-            .choose(&mut rand::thread_rng())
+            .choose(&mut rand::rng())
     }
 
     pub async fn random_id_in_group(&self, guild: GuildId, group_hash: u64) -> Option<Ulid> {
@@ -621,7 +621,7 @@ impl Soundboard {
                 sound.metadata.group.hash(&mut hasher);
                 (hasher.finish() == group_hash).then_some(sound.metadata.id)
             })
-            .choose(&mut rand::thread_rng())
+            .choose(&mut rand::rng())
     }
 
     pub async fn latest_id(&self, guild: GuildId) -> Option<Ulid> {

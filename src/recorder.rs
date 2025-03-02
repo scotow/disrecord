@@ -7,12 +7,12 @@ use std::{
 };
 
 use itertools::Itertools;
-use log::{debug, info, log, log_enabled, Level};
+use log::{Level, debug, info, log, log_enabled};
 use serenity::model::id::{GuildId, UserId};
 use tokio::{
     fs::{File, OpenOptions},
     io::AsyncWriteExt,
-    sync::{mpsc, mpsc::UnboundedSender, oneshot::Sender as OneshotSender, Mutex},
+    sync::{Mutex, mpsc, mpsc::UnboundedSender, oneshot::Sender as OneshotSender},
     time::sleep,
 };
 
@@ -269,7 +269,7 @@ impl GuildRecorder {
 
                                 let mut chunks = data
                                     .chunks(FREQUENCY / 50)
-                                    .group_by(|c| c.iter().any(|&f| f != 0))
+                                    .chunk_by(|c| c.iter().any(|&f| f != 0))
                                     .into_iter()
                                     .filter(|&(is_voice, _)| is_voice)
                                     .filter_map(|(_, frames)| {
