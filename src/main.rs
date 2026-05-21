@@ -42,6 +42,7 @@ use songbird::EventHandler as VoiceEventHandler;
 use songbird::{
     CoreEvent, Event, EventContext, SerenityInit, Songbird, driver::DecodeMode, input::Input,
 };
+use songbird::driver::DecodeConfig;
 use symphonia as _;
 use tokio::{
     net::TcpListener,
@@ -1708,7 +1709,7 @@ async fn main() -> ExitCode {
         | GatewayIntents::GUILD_PRESENCES
         | GatewayIntents::GUILD_VOICE_STATES;
     let songbird =
-        Songbird::serenity_from_config(songbird::Config::default().decode_mode(DecodeMode::Decode));
+        Songbird::serenity_from_config(songbird::Config::default().decode_mode(DecodeMode::Decode(DecodeConfig::default())));
     let mut client = Client::builder(options.discord_token, intents)
         .event_handler(Handler {
             bot_id: Arc::new(AtomicU64::new(0)),

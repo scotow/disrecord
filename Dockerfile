@@ -1,4 +1,4 @@
-FROM rust:1.85 AS builder
+FROM rust:1.95 AS builder
 
 WORKDIR /app
 
@@ -9,7 +9,7 @@ RUN LIBOPUS_STATIC=1 cargo build --release
 
 #------------
 
-FROM debian:bookworm-slim
+FROM debian:trixie-slim
 
 COPY --from=mwader/static-ffmpeg:6.1 /ffmpeg /usr/local/bin/
 COPY --from=builder /app/target/release/disrecord /disrecord
